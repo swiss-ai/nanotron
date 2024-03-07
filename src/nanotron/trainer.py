@@ -485,7 +485,8 @@ class DistributedTrainer:
 
             if wandb is not None:
                 wandb.log(
-                    {**{log_item.tag: log_item.scalar_value for log_item in log_entries}, "step": self.iteration_step}
+                    {**{log_item.tag: log_item.scalar_value for log_item in log_entries}, "step": self.iteration_step},
+                    step=self.iteration_step - 1
                 )
 
             self.loggerwriter.add_scalars_from_list(log_entries, self.iteration_step)
