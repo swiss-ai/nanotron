@@ -2,7 +2,7 @@ import datetime
 import os
 from dataclasses import dataclass, fields
 from pathlib import Path
-from typing import Optional, Type, Union
+from typing import List, Optional, Type, Union
 
 import dacite
 import torch
@@ -96,16 +96,42 @@ class PretrainDatasetsArgs:
 
 
 @dataclass
+class NanosetDatasetsArgs:
+    data_path: Union[str, dict]
+    split: Optional[str] = "949,50,1"
+    path_to_cache: Optional[
+        str
+    ] = "_"  # If defaults to None, dacite is not able to parse the config. Set to None in __post_init__
+
+    def __post_init__(self):
+        if not os.path.isdir(self.path_to_cache):
+            self.path_to_cache = None
+
+
+@dataclass
 class DataArgs:
     """Arguments related to the data and data files processing"""
 
-    dataset: Optional[PretrainDatasetsArgs]
+    dataset: Union[PretrainDatasetsArgs, NanosetDatasetsArgs]
     seed: Optional[int]
-    num_loading_workers: Optional[int] = 1
+    num_loading_workers: Optional[int] = 0
 
     def __post_init__(self):
         if self.seed is None:
             self.seed = DEFAULT_SEED
+
+
+@dataclass
+class DatasetStageArgs:
+    """Arguments for loading dataset in different stages of the training process"""
+
+    name: str
+    start_training_step: int
+    data: DataArgs
+
+    def __post_init__(self):
+        if self.start_training_step < 0:
+            raise ValueError(f"training_steps should be a positive integer and not {self.start_training_step}")
 
 
 @dataclass
@@ -300,7 +326,7 @@ class Config:
     logging: Optional[LoggingArgs] = None
     tokens: Optional[TokensArgs] = None
     optimizer: Optional[OptimizerArgs] = None
-    data: Optional[DataArgs] = None
+    data_stages: Optional[List[DatasetStageArgs]] = None
     profiler: Optional[ProfilerArgs] = None
     lighteval: Optional[LightEvalConfig] = None
 
@@ -318,6 +344,22 @@ class Config:
             self.optimizer.learning_rate_scheduler.lr_decay_steps = (
                 self.tokens.train_steps - self.optimizer.learning_rate_scheduler.lr_warmup_steps
             )
+
+        if self.data_stages is not None:
+            names = [stage.name for stage in self.data_stages]
+            training_steps = [stage.start_training_step for stage in self.data_stages]
+            assert any(
+                stage.start_training_step == 1 for stage in self.data_stages
+            ), "You must have a training stage starting at 1 in the config's data_stages"
+
+            for stage in self.data_stages:
+                if names.count(stage.name) > 1:
+                    raise ValueError(f"Each stage should have unique names and not {names}")
+
+                if training_steps.count(stage.start_training_step) > 1:
+                    raise ValueError(
+                        f"Each stage should have unique starting training step, please change the starting training step for stage {stage.name}"
+                    )
 
         # # if lighteval, we need tokenizer to be defined
         # if self.checkpoints.lighteval is not None:
