@@ -77,7 +77,7 @@ def get_args():
         "--dataset",
         type=str,
         required=True,
-        help="Path to a .paquet file or hf:// path",
+        help="Path to a .parquet file or a folder containing multiple .parquet files",
     )
     p3.add_argument("--column", type=str, default="text", help="Column to preprocess from the Dataset. Default: text")
     p3.add_argument(
