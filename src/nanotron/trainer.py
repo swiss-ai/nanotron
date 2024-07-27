@@ -56,7 +56,7 @@ from nanotron.logging import (
 )
 from nanotron.models import NanotronModel, build_model
 from nanotron.models.base import check_model_has_grad
-from nanotron.models.llama import LlamaForTraining, RotaryEmbedding
+from nanotron.models.llama import LlamaForTraining
 from nanotron.models.starcoder2 import Starcoder2ForTraining
 from nanotron.optim.clip_grads import clip_grad_norm
 from nanotron.parallel import ParallelContext
@@ -750,11 +750,12 @@ class DistributedTrainer:
             model_builder=model_builder,
         )
 
+        # TODO(tj.solergibert) Fix this RoPE init only used with LlamaModel for generation?
         # Initialize rotary embeddings
-        for module in model.modules():
-            if not isinstance(module, RotaryEmbedding):
-                continue
-            module.init_rotary_embeddings()
+        # for module in model.modules():
+        #     if not isinstance(module, RotaryEmbedding):
+        #         continue
+        #     module.init_rotary_embeddings()
 
         # Mark some parameters as tied
         self._mark_tied_parameters(model=model, parallel_context=parallel_context, parallel_config=parallel_config)
