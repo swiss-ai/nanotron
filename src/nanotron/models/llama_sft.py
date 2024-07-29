@@ -42,7 +42,6 @@ from nanotron.parallel.tensor_parallel.nn import (
 )
 from nanotron.random import RandomStates
 from nanotron.scaling.parametrization import SpectralMupParametrizator, StandardParametrizator
-from nanotron.utils import checkpoint_method
 
 logger = logging.get_logger(__name__)
 
@@ -61,16 +60,14 @@ def _compute_default_rope_parameters(
         inv_freq (torch.Tensor)
             Contains the inverse frequencies for the RoPE embeddings
     """
+    with torch.autocast(device_type="cuda", enabled=False):
+        base = config.rope_theta  # NOTE(tj.solergibert) 500000.0
+        dim = int(config.hidden_size // config.num_attention_heads)  # NOTE(tj.solergibert) 128
 
-    base = config.rope_theta  # NOTE(tj.solergibert) 500000.0
-    partial_rotary_factor = (
-        config.partial_rotary_factor if hasattr(config, "partial_rotary_factor") else 1.0
-    )  # NOTE(tj.solergibert) 1
-    dim = int((config.hidden_size // config.num_attention_heads) * partial_rotary_factor)  # NOTE(tj.solergibert) 128
-
-    # Compute the inverse frequencies
-    inv_freq = 1.0 / (base ** (torch.arange(0, dim, 2, dtype=torch.int64).float() / dim))
-    return inv_freq
+        # Compute the inverse frequencies
+        inv_freq = 1.0 / (base ** (torch.arange(0, dim, 2, dtype=torch.int64).float() / dim)).cuda()
+        print(inv_freq.dtype)
+        return inv_freq
 
 
 # NOTE(tj.solergibert) Copied from https://github.com/huggingface/transformers/blob/5f841c74b62754f186a8c06a684d491524b7bc03/src/transformers/models/llama/modeling_llama.py#L81
@@ -85,9 +82,11 @@ class LlamaRotaryEmbedding(nn.Module):
         super().__init__()
         self.config = config
 
-        inv_freq = _compute_default_rope_parameters(self.config)  # NOTE(tj.solergibert) shape: 64 , 1.0
-        self.register_buffer("inv_freq", inv_freq, persistent=False)
-        self.original_inv_freq = self.inv_freq
+        self.inv_freq = _compute_default_rope_parameters(self.config)  # NOTE(tj.solergibert) shape: 64 , 1.0
+        # print(inv_freq.dtype)
+        # self.register_buffer("inv_freq", inv_freq, persistent=False)
+        # print(self.inv_freq.dtype) # TODO(tj.solergibert) register_buffer casts to bf16!!!!
+        # self.original_inv_freq = inv_freq
 
     @torch.no_grad()
     def forward(self, x, position_ids):
@@ -212,46 +211,6 @@ class MLP(nn.Module):
         return hidden_states
 
 
-class CoreAttention(nn.Module):
-    def __init__(self, config: LlamaConfig, parallel_config: Optional[ParallelismArgs], layer_idx: int):
-        super().__init__()
-        # TODO @thomasw21: GPT has a weird `d_kv` config which I'm guessing is essentically a `d_qkv`
-        assert (
-            config.hidden_size % config.num_attention_heads == 0
-        ), f"Hidden size {config.hidden_size} must be divisible by number of attention heads {config.num_attention_heads}."
-        self.d_qk = config.hidden_size // config.num_attention_heads
-        self.d_v = config.hidden_size // config.num_attention_heads
-        self.is_using_mup = config.is_using_mup
-
-        self.checkpoint_attention = False  # Because flash_attn already does checkpointing
-
-    @checkpoint_method(attr_name="checkpoint_attention")
-    def forward(
-        self,
-        query_states: torch.Tensor,  # [batch_size, q_length, n_local_q_heads, inner_dim]
-        key_states: torch.Tensor,  # [batch_size, kv_length, n_local_kv_heads, inner_dim]
-        value_states: torch.Tensor,  # [batch_size, kv_length, n_local_kv_heads, inner_dim]
-    ):
-        from flash_attn.flash_attn_interface import flash_attn_func
-
-        # NOTE: this scale is for µTransfer,
-        # in SP, we use sqrt(1/d_h)
-        softmax_scale = 1 / query_states.shape[-1] if self.is_using_mup else None
-        # For now we are assuming that we use causual mask. No magic here
-        causal = True
-        attn_output = flash_attn_func(
-            q=query_states,
-            k=key_states,
-            v=value_states,
-            dropout_p=0.0,
-            softmax_scale=softmax_scale,
-            causal=causal,
-            return_attn_probs=False,
-        )
-
-        return attn_output
-
-
 class CausalSelfAttention(nn.Module, AttachableStore):
     def __init__(
         self,
@@ -289,7 +248,6 @@ class CausalSelfAttention(nn.Module, AttachableStore):
         self.d_qk = config.hidden_size // config.num_attention_heads
         self.d_v = config.hidden_size // config.num_attention_heads
         self.d_model = config.hidden_size
-        self.is_using_mup = config.is_using_mup
 
         # TODO @thomasw21: refactor so that we store that default in a single place.
         tp_mode = parallel_config.tp_mode if parallel_config is not None else TensorParallelLinearMode.ALL_REDUCE
@@ -323,13 +281,6 @@ class CausalSelfAttention(nn.Module, AttachableStore):
             async_communication=tp_linear_async_communication,
         )
 
-        # TODO(tj.solergibert) Deshacernos de este bloque POR DIOS!!!
-        self.attention = CoreAttention(
-            config,
-            parallel_config=parallel_config,
-            layer_idx=layer_idx,
-        )
-
     def forward(
         self,
         hidden_states,  # [seq_length, batch_size, hidden_size]
@@ -354,17 +305,27 @@ class CausalSelfAttention(nn.Module, AttachableStore):
             )
 
             query_states = (
-                query_states.transpose(0, 1).contiguous().view(batch_size, q_length, self.n_local_q_heads, self.d_qk)
+                query_states.transpose(0, 1)
+                .contiguous()
+                .view(
+                    batch_size, q_length, self.n_local_q_heads, self.d_qk
+                )  # TODO(tj.solergibert) q_length to -1 BUT q_lenght is already well computed
             )
             key_states = (
-                key_states.transpose(0, 1).contiguous().view(batch_size, q_length, self.n_local_kv_heads, self.d_qk)
+                key_states.transpose(0, 1)
+                .contiguous()
+                .view(batch_size, q_length, self.n_local_kv_heads, self.d_qk)  # TODO(tj.solergibert) q_length to -1
             )
             value_states = (
-                value_states.transpose(0, 1).contiguous().view(batch_size, q_length, self.n_local_kv_heads, self.d_qk)
+                value_states.transpose(0, 1)
+                .contiguous()
+                .view(batch_size, q_length, self.n_local_kv_heads, self.d_qk)  # TODO(tj.solergibert) q_length to -1
             )
         else:
             query_states, key_states, value_states = (
-                qkv_states.view(q_length, batch_size, 3, self.n_local_q_heads, self.d_qk)
+                qkv_states.view(
+                    q_length, batch_size, 3, self.n_local_q_heads, self.d_qk
+                )  # TODO(tj.solergibert) q_length to -1
                 .permute(2, 1, 0, 3, 4)
                 .contiguous()
             )  # [3, batch_size, seq_length, n_local_q_heads, d_qk]
@@ -419,7 +380,9 @@ class CausalSelfAttention(nn.Module, AttachableStore):
 
         attention_output = (
             attention_output.contiguous()
-            .view(batch_size, q_length, self.n_local_q_heads * self.d_v)
+            .view(
+                batch_size, q_length, self.n_local_q_heads * self.d_v
+            )  # TODO(tj.solergibert) q_length to -1. Also take care of batch size will be always 1
             .transpose(0, 1)  # TODO(tj.solergibert) View is necessary, but contiguous?
         )
         output = self.o_proj(attention_output)
@@ -503,17 +466,18 @@ class Embedding(nn.Module, AttachableStore):
             # store["past_length"] = past_length + cumsum_mask[:, -1]
         ################################################################
 
+        # Format input in `[seq_length, batch_size]` to support high TP with low batch_size
+        input_ids = input_ids.transpose(0, 1)
+        input_embeds = self.token_embedding(input_ids)
+
         # NOTE(tj.solergibert) We create the cos & sin and propagate them through the pipeline so we
         # don't have to create the LlamaRotaryEmbedding layer in each and every decoder layer
         # We will still send the position ids for the varlen, but we will try to delete it. Computing them from
         # the position ids it's not very expensive AND we keep a tensor with constant shape
         cos, sin = self.position_embedding(
-            input_ids, position_ids
+            input_embeds, position_ids
         )  # TODO(tj.solergibert) We just need from inputs_ids the device type
 
-        # Format input in `[seq_length, batch_size]` to support high TP with low batch_size
-        input_ids = input_ids.transpose(0, 1)
-        input_embeds = self.token_embedding(input_ids)
         return {"input_embeds": input_embeds, "position_ids": position_ids, "cos": cos, "sin": sin}
 
 
@@ -669,6 +633,8 @@ class LlamaModel(nn.Module):
         return model_flops_per_s, hardware_flops_per_s
 
 
+# TODO(tj.solergibert) OJO con la label mask!!! Tal vez necesitamos hacer algo con los input ids!!
+# TODO(tj.solergibert) A pero espera, si esta a -100 ya basta no? Habria que comprobar eso con la loss esa rara que hacemos, mierda!!
 @torch.jit.script
 def masked_mean(loss, label_mask, dtype):
     # type: (Tensor, Tensor, torch.dtype) -> Tensor

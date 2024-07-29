@@ -84,7 +84,7 @@ class NanosetDataCollatorForCLM:
 # We could compute position ids after tokenizing each sample but we will still miss the last length of the padding tokens
 def build_position_ids(lengths, sequence_length) -> np.array:
     position_ids = [list(range(length)) for length in lengths]  # Create position ids list
-    position_ids.append([0] * (sequence_length - sum(lengths)))  # Append position_ids of the padding tokens
+    # position_ids.append([0] * (sequence_length - sum(lengths)))  # Append position_ids of the padding tokens
     return np.array([x for xs in position_ids for x in xs], dtype=np.int32)  # Flatten list of position ids
 
 
@@ -132,33 +132,32 @@ class NanoChatDataCollatorForSFT:  # TODO(tj.solergibert) Find a better name
             assert all(len(example) == 0 for example in examples)
             return {
                 "input_ids": TensorPointer(group_rank=self.input_pp_rank),
-                "input_mask": TensorPointer(group_rank=self.input_pp_rank),
                 "label_ids": TensorPointer(group_rank=self.output_pp_rank),
+                "position_ids": TensorPointer(group_rank=self.input_pp_rank),
                 "label_mask": TensorPointer(group_rank=self.output_pp_rank),
             }
 
-        # TODO clean this, as we are flatting the batch there is no necessity for vstack but we need the batch dimension too
+        # TODO(tj.solergibert) Clean this, as we are flattening the batch there is no necessity for vstack but we need the batch dimension too
         input_ids = np.vstack([examples[i]["input_ids"] for i in range(len(examples))])  # (b, s)
-        label_ids = np.vstack([examples[i]["label_ids"] for i in range(len(examples))])  # (b, s)
+        is_completitions = np.vstack([examples[i]["is_completitions"] for i in range(len(examples))])  # (b, s)
         position_ids = np.vstack([examples[i]["position_ids"] for i in range(len(examples))])  # (b, s)
 
         result: Dict[str, Union[np.ndarray, TensorPointer]] = {}
 
         result["input_ids"] = TensorPointer(group_rank=self.input_pp_rank)
-        result["input_mask"] = TensorPointer(group_rank=self.input_pp_rank)
+        result["position_ids"] = TensorPointer(group_rank=self.input_pp_rank)
         result["label_ids"] = TensorPointer(group_rank=self.output_pp_rank)
         result["label_mask"] = TensorPointer(group_rank=self.output_pp_rank)
 
         # Process inputs
         if current_pp_rank == self.input_pp_rank:
-            result["input_ids"] = input_ids
-            result["input_mask"] = np.ones((1, self.sequence_length), dtype=np.bool_)
-            result["position_ids"] = position_ids
+            result["input_ids"] = input_ids[:, :-1]
+            result["position_ids"] = position_ids[:, :-1]
 
-        # Process labels: shift them to the left
+        # Process labels: shift them to the left.
         if current_pp_rank == self.output_pp_rank:
-            result["label_ids"] = label_ids
-            result["label_mask"] = np.ones((1, self.sequence_length), dtype=np.bool_)
+            result["label_ids"] = input_ids[:, 1:]
+            result["label_mask"] = is_completitions[:, 1:]
 
         # Cast np.array to torch.Tensor
         result = {k: v if isinstance(v, TensorPointer) else torch.from_numpy(v) for k, v in result.items()}

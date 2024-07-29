@@ -116,23 +116,23 @@ class ChatDataset(IterableDataset):
                     buffer_lengths = [len(tokens)]
 
                     # Pad to max_buffer_token_len. Pad token added in ChatTokenizer init if necessary
-                    sample_tokens.extend(
-                        [self.chat_tokenizer.tokenizer.pad_token_id] * (max_buffer_token_len - len(sample_tokens))
-                    )
-                    sample_completitions.extend([False] * (max_buffer_token_len - len(sample_completitions)))
+                    # sample_tokens.extend(
+                    #     [self.chat_tokenizer.tokenizer.pad_token_id] * (max_buffer_token_len - len(sample_tokens))
+                    # )
+                    # sample_completitions.extend([False] * (max_buffer_token_len - len(sample_completitions)))
 
                     # TODO delete, just 4 switching the training only on completitions setting
-                    labels = self.create_labels(sample_tokens, sample_completitions)
+                    self.create_labels(sample_tokens, sample_completitions)
 
                     # TODO delete, just 4 switching the remove cross-attention setting
                     position_ids = self.create_position_ids(sample_lengths, self.sequence_length)
 
                     # TODO delete (debug)
-                    assert len(sample_tokens) == max_buffer_token_len
+                    # assert len(sample_tokens) == max_buffer_token_len
 
                     yield {
-                        "input_ids": np.array(sample_tokens[:-1], dtype=np.int32),
-                        "label_ids": labels,
+                        "input_ids": np.array(sample_tokens, dtype=np.int32),
+                        "is_completitions": np.array(sample_completitions, dtype=np.bool_),
                         "position_ids": position_ids,
                     }
 
