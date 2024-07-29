@@ -66,7 +66,6 @@ def _compute_default_rope_parameters(
 
         # Compute the inverse frequencies
         inv_freq = 1.0 / (base ** (torch.arange(0, dim, 2, dtype=torch.int64).float() / dim)).cuda()
-        print(inv_freq.dtype)
         return inv_freq
 
 
@@ -361,8 +360,7 @@ class CausalSelfAttention(nn.Module, AttachableStore):
 
         # Prepare varlen args
         cu_seqlens, max_seqlen_in_batch = prepare_varlen_args(position_ids)
-        print(cu_seqlens)
-        print(max_seqlen_in_batch)
+
         query_states = query_states.view(-1, query_states.size(-2), query_states.size(-1))
         key_states = key_states.view(-1, key_states.size(-2), key_states.size(-1))
         value_states = value_states.view(-1, value_states.size(-2), value_states.size(-1))
