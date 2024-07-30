@@ -255,6 +255,20 @@ class DistributedTrainer:
         # NOTE: the dataloader currently in use for the current training stage
         self.current_dataloader: Optional[DataLoader] = None
 
+        # NOTE(tj.solergibert) Flatten batch size in SFT training
+        if isinstance(self.config.data_stages[0].data.dataset, ChatDatasetsArgs) and self.micro_batch_size != 1:
+            self.sequence_length = self.micro_batch_size * self.config.tokens.sequence_length
+            self.micro_batch_size = 1
+            self.global_batch_size = (
+                self.micro_batch_size * self.n_micro_batches_per_batch * self.parallel_context.dp_pg.size()
+            )
+            log_rank(
+                f"Flattening Batch dimension for SFT training. global_batch_size:{self.global_batch_size}, micro_batch_size: {self.micro_batch_size}, sequence_length: {self.sequence_length}",
+                logger=logger,
+                level=logging.INFO,
+                rank=0,
+            )
+
         self.post_init()
 
     def pre_init(self):

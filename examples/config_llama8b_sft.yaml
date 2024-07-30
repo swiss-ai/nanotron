@@ -1,6 +1,6 @@
 checkpoints:
   checkpoint_interval: 1000
-  checkpoints_path: /mloscratch/homes/solergib/converter/nanotron/checkpoints
+  checkpoints_path: checkpoints/
   checkpoints_path_is_shared_file_system: false
   resume_checkpoint_path: null
   save_initial_state: false
@@ -20,7 +20,7 @@ general:
   benchmark_csv_path: null
   consumed_train_samples: null
   ignore_sanity_checks: true
-  project: Chat
+  project: SFT
   run: Llama3-8B
   seed: 42
   step: null
@@ -33,25 +33,26 @@ model:
   ddp_bucket_cap_mb: 25
   dtype: bfloat16
   init_method:
-    std: 0.025
+    path: /mloscratch/homes/solergib/converter/nanotron/nanotron_checkpoints/NanotronLlama38B
   make_vocab_size_divisible_by: 1
   model_config:
-    bos_token_id: 128000
-    eos_token_id: 128001
+    bos_token_id: 1
+    eos_token_id: 2
     hidden_act: silu
     hidden_size: 4096
     initializer_range: 0.02
     intermediate_size: 14336
     is_llama_config: true
     max_position_embeddings: 4096
+    num_hidden_layers: 32
     num_attention_heads: 32
-    num_hidden_layers: 4
     num_key_value_heads: 8
     pad_token_id: null
     pretraining_tp: 1
-    rms_norm_eps: 1.0e-05
-    rope_scaling: null
+    rope_interleaved: false
     rope_theta: 500000.0
+    rms_norm_eps: 1.0e-06
+    rope_scaling: null
     tie_word_embeddings: false
     use_cache: true
     vocab_size: 128256
@@ -59,7 +60,7 @@ optimizer:
   accumulate_grad_in_fp32: true
   clip_grad: 1.0
   learning_rate_scheduler:
-    learning_rate: 0.0003
+    learning_rate: 2.0e-5
     lr_decay_starting_step: null
     lr_decay_steps: 98
     lr_decay_style: cosine
@@ -79,7 +80,7 @@ parallelism:
   expert_parallel_size: 1
   pp: 1
   pp_engine: 1f1b
-  tp: 1
+  tp: 4
   tp_linear_async_communication: false
   tp_mode: ALL_REDUCE
 profiler: null
@@ -93,5 +94,5 @@ tokens:
   limit_val_batches: 0
   micro_batch_size: 3
   sequence_length: 4096
-  train_steps: 100
+  train_steps: 250
   val_check_interval: -1
