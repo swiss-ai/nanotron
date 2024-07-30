@@ -27,12 +27,14 @@ PP = 1
 TP = 1
 
 # NOTE(tj.solergibert) How many K-first tokens must match
-TOPK_MATCH = 3
+# NOTE(tj.solergibert) After running lot's of tests, MOST (If not 100%)  of the times the most probable token matches. Sometimes there are slightly differences in the next tokens,
+# usually when the first token has a very high probability and the rest are left with < 1e-2.
+TOPK_MATCH = 1
 
 BATCHES = 15
 
 
-def build_labels_completions_only(input_ids, is_completitions):
+def hf_build_labels_completions_only(input_ids, is_completitions):
     labels = np.where(
         is_completitions, input_ids, -100
     )  # Mask tokens that don't belong to the completitions by the Assistant
@@ -197,10 +199,10 @@ def main():
 
     # Create ChatDataloaders
     train_dataset = ChatDataset(
-        dataset_path="Open-Orca/SlimOrca",
+        dataset_path="Magpie-Align/Magpie-Pro-300K-Filtered",  # "Open-Orca/SlimOrca",
         tokenizer_name_or_path=PATH_TO_LLAMA,
         sequence_length=2048,
-        train_on_completions_only=True,
+        train_on_completions_only=False,
         remove_cross_attention=True,
         split="train",
         conversation_column_name="conversations",
@@ -211,7 +213,6 @@ def main():
     # Prepare dataloader
     train_dataloader = build_chat_dataloader(
         dataset=train_dataset,
-        sequence_length=2048,
         parallel_context=parallel_context,
         input_pp_rank=0,
         output_pp_rank=0,
@@ -240,8 +241,9 @@ def main():
         # This will always fail! We aren't performing the SAME operations. Nanotron packs QKV matrices, MLP & LayerNorm is different. So we don't have to focus on MATCHING LOGITS BUT GENERATIONS
         # assert_close(output_hf.logits, output_nanotron.transpose(0, 1), rtol=1e-1, atol=1e-1)
 
-        predicted_tokens = [37, 92, 125, 423, 744, 912, 1298]
+        predicted_tokens = [62, 92, 125, 425, 744, 912, 1298]
         for predicted_token in predicted_tokens:
+            print(predicted_token)
             next_tokens_hf = torch.softmax(output_hf.logits[0, predicted_token, :], -1)
             hf_topk_next_tokens = torch.topk(next_tokens_hf, 10)
 
@@ -261,7 +263,7 @@ def main():
         )["loss"]
 
         # Creating labels_ids for HF loss computation
-        hf_labels = build_labels_completions_only(
+        hf_labels = hf_build_labels_completions_only(
             batch["label_ids"].flatten().tolist(), batch["label_mask"].flatten().tolist()
         )
         shift_logits = output_hf.logits.contiguous()

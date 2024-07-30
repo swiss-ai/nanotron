@@ -59,8 +59,8 @@ class ChatTokenizer:
         return tokens, is_completitions
 
     def encode_message(self, message: dict) -> Tuple[List[int], List[int]]:
-        # TODO The "from", "value", "gpt" keys are form SlimOrca Dataset. Llama3 uses another ones. We should stick to a
-        # single format and document it properly rather than supporting multiple formats, as each one will need a different
+        # NOTE(tj.solergibert) The "from", "value", "gpt" keys are from SlimOrca Dataset. Llama3 HF Pretrained tokenizer uses another ones. We should stick to a
+        # single format and document it properly rather than supporting multiple formats, as each DATASET will need a different
         # ChatTokenizer and the idea is that all Datasets share the same ChatTokenizer
 
         # Encode header

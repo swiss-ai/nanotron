@@ -191,7 +191,6 @@ def get_dataloader_from_data_stage(
         # Prepare dataloader
         train_dataloader = build_chat_dataloader(
             dataset=train_dataset,
-            sequence_length=trainer.sequence_length,
             parallel_context=trainer.parallel_context,
             input_pp_rank=input_pp_rank,
             output_pp_rank=output_pp_rank,

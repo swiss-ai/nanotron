@@ -7,7 +7,7 @@ checkpoints:
 data_stages:
 - data:
     dataset:
-      hf_dataset: Open-Orca/SlimOrca
+      hf_dataset: Magpie-Align/Magpie-Pro-300K-Filtered
       hf_dataset_split: train
       conversation_column_name: conversations
       train_on_completions_only: true

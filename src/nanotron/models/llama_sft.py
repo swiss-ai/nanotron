@@ -45,8 +45,17 @@ from nanotron.scaling.parametrization import SpectralMupParametrizator, Standard
 
 logger = logging.get_logger(__name__)
 
+####################################################################################
+############################## SFT Auxiliary functions ##############################
+####################################################################################
+## Copied RoPE functions from HF Transformers. Nanotron ships with FlashAttention ##
+## RoPEs written in triton which are considerbly faster BUT currently they don't  ##
+## support the poisiton ids necessary for the cross attention feature. The cos &  ##
+## sin are created in the embedding layer and propagated through the pipeline so  ##
+## we don't have a RoPE layer in each and every decoder layer. Then in each and   ##
+## every decoder layer we apply the cos & sin to Q & K with `apply_rotary_pos_emb`##
+####################################################################################
 
-#######
 # NOTE(tj.solergibert) Copied from https://github.com/huggingface/transformers/blob/81233c069c166af033794134bd8888783ac49ebe/src/transformers/modeling_rope_utils.py#L29
 def _compute_default_rope_parameters(
     config: LlamaConfig,
@@ -81,10 +90,8 @@ class LlamaRotaryEmbedding(nn.Module):
         super().__init__()
         self.config = config
 
-        self.inv_freq = _compute_default_rope_parameters(self.config)  # NOTE(tj.solergibert) shape: 64 , 1.0
-        # print(inv_freq.dtype)
-        # self.register_buffer("inv_freq", inv_freq, persistent=False)
-        # print(self.inv_freq.dtype) # TODO(tj.solergibert) register_buffer casts to bf16!!!!
+        self.inv_freq = _compute_default_rope_parameters(self.config)
+        # self.register_buffer("inv_freq", inv_freq, persistent=False) # NOTE(tj.solergibert) register_buffer casts to bf16!
         # self.original_inv_freq = inv_freq
 
     @torch.no_grad()
@@ -130,10 +137,10 @@ def apply_rotary_pos_emb(q, k, cos, sin, unsqueeze_dim=1):
     Returns:
         tuple (torch.Tensor) comprising of the query and key tensors rotated using the Rotary Position Embedding.
     """
-    cos = cos.unsqueeze(unsqueeze_dim)  # NOTE(tj.solergibert) [1, 70, 128] --> [1, 1, 70, 128]
-    sin = sin.unsqueeze(unsqueeze_dim)  # NOTE(tj.solergibert)
-    q_embed = (q * cos) + (rotate_half(q) * sin)  # NOTE(tj.solergibert) [1, 32, 70, 128]
-    k_embed = (k * cos) + (rotate_half(k) * sin)  # NOTE(tj.solergibert) [1, 8, 70, 128]
+    cos = cos.unsqueeze(unsqueeze_dim)
+    sin = sin.unsqueeze(unsqueeze_dim)
+    q_embed = (q * cos) + (rotate_half(q) * sin)
+    k_embed = (k * cos) + (rotate_half(k) * sin)
     return q_embed, k_embed
 
 
@@ -152,7 +159,7 @@ def prepare_varlen_args(position_ids):
     return cu_seqlens, max_seqlen_in_batch
 
 
-#######
+####################################################################################
 
 
 class GLUActivation(nn.Module):
@@ -329,29 +336,6 @@ class CausalSelfAttention(nn.Module, AttachableStore):
                 .contiguous()
             )  # [3, batch_size, seq_length, n_local_q_heads, d_qk]
 
-        # Training case OLD
-        # Apply rotary embeddings to query/key states
-        # NOTE: The layout is different from models/llama.py which is [batch_size, num_heads, seq_length, d_qk]
-        # Here it is, [batch_size, seq_length, num_heads, d_qk]
-        # [2, batch_size, seq_length, num_heads, d_qk]
-        # key_value_states = torch.cat([key_states.unsqueeze(0), value_states.unsqueeze(0)], dim=0)
-        # [batch_size, seq_length, 2, num_heads, d_qk]
-        # key_value_states = key_value_states.permute(1, 2, 0, 3, 4).contiguous()
-        # query_states, key_value_states = self.flash_rotary_embedding(query_states, kv=key_value_states)
-        # [batch_size, seq_length, num_heads, d_qk]
-        # key_states, value_states = torch.split(key_value_states, 1, dim=2)
-
-        # TODO(tj.solergibert) ver si esto sirve de algo o no!!!!!
-        # kv_length = key_states.shape[1]
-        # key_states = key_states.view(batch_size, kv_length, self.n_local_kv_heads, self.d_qk)
-        # value_states = value_states.view(batch_size, kv_length, self.n_local_kv_heads, self.d_v)
-
-        # attention_output = self.attention(
-        #     query_states=query_states,
-        #     key_states=key_states,
-        #     value_states=value_states,
-        # )
-
         # TODO(tj.solergibert) Apply RoPE embeddings WITHOUT too many transpose...
         query_states, key_states = query_states.transpose(1, 2), key_states.transpose(1, 2)
         # Apply RoPE
@@ -366,21 +350,19 @@ class CausalSelfAttention(nn.Module, AttachableStore):
         value_states = value_states.view(-1, value_states.size(-2), value_states.size(-1))
 
         attention_output = flash_attn_varlen_func(
-            query_states,  # NOTE(tj.solergibert) Shape: [70, 32, 128]
-            key_states,  # NOTE(tj.solergibert) Shape: [70, 8, 128]
-            value_states,  # NOTE(tj.solergibert) Shape: [70, 8, 128]
-            cu_seqlens_q=cu_seqlens,  # NOTE(tj.solergibert) Shape: Tensor, [14]
-            cu_seqlens_k=cu_seqlens,  # NOTE(tj.solergibert) Shape: Tensor, [14]
-            max_seqlen_q=max_seqlen_in_batch,  # NOTE(tj.solergibert) Shape: Tensor, [1] Just 1 element with the longer sequence in batch. In the HF Transformers dummy test is 7
-            max_seqlen_k=max_seqlen_in_batch,  # NOTE(tj.solergibert) Shape: Tensor, [1] Just 1 element with the longer sequence in batch. In the HF Transformers dummy test is 7
-            causal=True,  # NOTE(tj.solergibert) True
+            query_states,
+            key_states,
+            value_states,
+            cu_seqlens_q=cu_seqlens,
+            cu_seqlens_k=cu_seqlens,
+            max_seqlen_q=max_seqlen_in_batch,
+            max_seqlen_k=max_seqlen_in_batch,
+            causal=True,
         )  # NOTE(tj.solergibert) Returns out: (total, nheads, headdim).
 
         attention_output = (
             attention_output.contiguous()
-            .view(
-                batch_size, q_length, self.n_local_q_heads * self.d_v
-            )  # TODO(tj.solergibert) q_length to -1. Also take care of batch size will be always 1
+            .view(batch_size, q_length, self.n_local_q_heads * self.d_v)
             .transpose(0, 1)  # TODO(tj.solergibert) View is necessary, but contiguous?
         )
         output = self.o_proj(attention_output)
@@ -451,27 +433,13 @@ class Embedding(nn.Module, AttachableStore):
         self.position_embedding = LlamaRotaryEmbedding(config=config)
 
     def forward(self, input_ids: torch.Tensor, position_ids: torch.Tensor):  # [batch_size, seq_length]
-        # TODO(tj.solergibert) Delete this store stuff  ################
-        store = self.get_local_store()
-        if store is not None:
-            if "past_length" in store:
-                store["past_length"]
-            else:
-                torch.zeros(1, dtype=torch.long, device=input_ids.device).expand(input_ids.shape[0])
-
-            # cumsum_mask = input_mask.cumsum(-1, dtype=torch.long)
-            # Store new past_length in store
-            # store["past_length"] = past_length + cumsum_mask[:, -1]
-        ################################################################
-
         # Format input in `[seq_length, batch_size]` to support high TP with low batch_size
         input_ids = input_ids.transpose(0, 1)
         input_embeds = self.token_embedding(input_ids)
 
         # NOTE(tj.solergibert) We create the cos & sin and propagate them through the pipeline so we
         # don't have to create the LlamaRotaryEmbedding layer in each and every decoder layer
-        # We will still send the position ids for the varlen, but we will try to delete it. Computing them from
-        # the position ids it's not very expensive AND we keep a tensor with constant shape
+        # We will still send the position ids for the varlen
         cos, sin = self.position_embedding(
             input_embeds, position_ids
         )  # TODO(tj.solergibert) We just need from inputs_ids the device type
@@ -631,8 +599,6 @@ class LlamaModel(nn.Module):
         return model_flops_per_s, hardware_flops_per_s
 
 
-# TODO(tj.solergibert) OJO con la label mask!!! Tal vez necesitamos hacer algo con los input ids!!
-# TODO(tj.solergibert) A pero espera, si esta a -100 ya basta no? Habria que comprobar eso con la loss esa rara que hacemos, mierda!!
 @torch.jit.script
 def masked_mean(loss, label_mask, dtype):
     # type: (Tensor, Tensor, torch.dtype) -> Tensor
@@ -695,15 +661,18 @@ class LlamaForSFT(NanotronModel):
         label_ids: Union[torch.Tensor, TensorPointer],
         label_mask: Union[torch.Tensor, TensorPointer],
     ) -> Dict[str, Union[torch.Tensor, TensorPointer]]:
+
         sharded_logits = self.model(
             input_ids=input_ids,
             position_ids=position_ids,
         )
+
         loss = self.loss(
             sharded_logits=sharded_logits,
             label_ids=label_ids,
             label_mask=label_mask,
         )["loss"]
+
         return {"loss": loss}
 
     @torch.no_grad()

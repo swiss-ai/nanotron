@@ -80,43 +80,36 @@ class NanosetDataCollatorForCLM:
         return result
 
 
-# TODO Find a more elegant way. e.g. extend instead of append. OK, so no extend
-# We could compute position ids after tokenizing each sample but we will still miss the last length of the padding tokens
+# TODO(tj.solergibert) After "Beta", delete all the functs except `build_position_ids` and move `build_position_ids` to chat_dataset.py
 def build_position_ids(lengths, sequence_length) -> np.array:
     position_ids = [list(range(length)) for length in lengths]  # Create position ids list
-    # position_ids.append([0] * (sequence_length - sum(lengths)))  # Append position_ids of the padding tokens
     return np.array([x for xs in position_ids for x in xs], dtype=np.int32)  # Flatten list of position ids
 
 
-# TODO delete, just 4 switching the remove cross-attention setting
+# TODO(tj.solergibert) Delete (debug), just 4 switching the remove cross-attention setting
 def build_position_ids_dummy(lengths, sequence_length) -> np.array:
-    return np.array(list(range(sequence_length)), dtype=np.int32)  # TODO numpy arange
+    return np.array(list(range(sum(lengths))), dtype=np.int32)  # TODO numpy arange
 
 
-# TODO delete, just 4 switching the training only on completitions setting. This will be in the __iter__ method instead of a function
+# TODO(tj.solergibert) Delete (debug), just 4 switching the training only on completitions setting.
 def build_labels_completions_only(input_ids, is_completitions):
-    labels = np.where(
-        is_completitions, input_ids, -100
-    )  # Mask tokens that don't belong to the completitions by the Assistant
-    return np.array(labels[1:], dtype=np.int32)
+    return is_completitions
 
 
-# TODO delete, just 4 switching the training only on completitions setting
+# TODO(tj.solergibert) Delete (debug), just 4 switching the training only on completitions setting
 def build_labels(input_ids, is_completitions):
-    return np.array(input_ids[1:], dtype=np.int32)
+    return [True for _ in range(len(is_completitions))]
 
 
 @dataclass
-class NanoChatDataCollatorForSFT:  # TODO(tj.solergibert) Find a better name
+class DataCollatorForSFT:
     """
     Data collator used with Chat Dataset.
-    - sequence_length: Sequence length of each sample in the batch
     - input_pp_rank: Discards last input id token
     - output_pp_rank: Discards first label id token
     - other pp ranks: Don't have data. Instead, we use `TensorPointer` to point to the rank having the data.
     """
 
-    sequence_length: int
     input_pp_rank: int
     output_pp_rank: int
     parallel_context: ParallelContext
@@ -137,7 +130,6 @@ class NanoChatDataCollatorForSFT:  # TODO(tj.solergibert) Find a better name
                 "label_mask": TensorPointer(group_rank=self.output_pp_rank),
             }
 
-        # TODO(tj.solergibert) Clean this, as we are flattening the batch there is no necessity for vstack but we need the batch dimension too
         input_ids = np.vstack([examples[i]["input_ids"] for i in range(len(examples))])  # (b, s)
         is_completitions = np.vstack([examples[i]["is_completitions"] for i in range(len(examples))])  # (b, s)
         position_ids = np.vstack([examples[i]["position_ids"] for i in range(len(examples))])  # (b, s)

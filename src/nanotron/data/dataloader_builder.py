@@ -1,6 +1,6 @@
 import nanotron.distributed as dist
 from nanotron import logging
-from nanotron.data.collator import NanoChatDataCollatorForSFT, NanosetDataCollatorForCLM
+from nanotron.data.collator import DataCollatorForSFT, NanosetDataCollatorForCLM
 from nanotron.dataloader import (
     EmptyInfiniteDataset,
     get_dataloader_worker_init,
@@ -66,7 +66,6 @@ def build_nanoset_dataloader(
 
 def build_chat_dataloader(
     dataset,
-    sequence_length: int,
     parallel_context: ParallelContext,
     input_pp_rank: int,
     output_pp_rank: int,
@@ -78,8 +77,7 @@ def build_chat_dataloader(
         dataset_length = 1_000_000  # len(dataset) TODO find a more elegant way to specify this dummy dataset
         dataset = EmptyInfiniteDataset(length=dataset_length)
 
-    data_collator = NanoChatDataCollatorForSFT(
-        sequence_length=sequence_length,
+    data_collator = DataCollatorForSFT(
         input_pp_rank=input_pp_rank,
         output_pp_rank=output_pp_rank,
         parallel_context=parallel_context,
