@@ -1,0 +1,15 @@
+image = "/store/swissai/a06/.sft_toni/nanotron_sft.sqsh"
+mounts = [
+"/capstor",
+"/users",
+"/store",
+]
+workdir = "/workspace/nanotron/"
+
+[env]
+FI_CXI_DISABLE_HOST_REGISTER = "1"
+FI_MR_CACHE_MONITOR = "userfaultfd"
+
+[annotations.com.hooks]
+aws_ofi_nccl.enabled = "true"
+aws_ofi_nccl.variant = "cuda12"
