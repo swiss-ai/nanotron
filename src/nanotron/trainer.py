@@ -26,6 +26,7 @@ from torch.utils.data import DataLoader
 from nanotron import distributed as dist
 from nanotron import logging
 from nanotron.config import (
+    ChatDatasetsArgs,
     Config,
     DatasetStageArgs,
     ExistingCheckpointInit,
@@ -56,7 +57,8 @@ from nanotron.logging import (
 )
 from nanotron.models import NanotronModel, build_model
 from nanotron.models.base import check_model_has_grad
-from nanotron.models.llama import LlamaForTraining, RotaryEmbedding
+from nanotron.models.llama import LlamaForTraining
+from nanotron.models.llama_sft import LlamaForSFT
 from nanotron.models.starcoder2 import Starcoder2ForTraining
 from nanotron.optim.clip_grads import clip_grad_norm
 from nanotron.parallel import ParallelContext
@@ -102,6 +104,7 @@ dist_logger.setLevel(logging.WARNING)
 
 CONFIG_TO_MODEL_CLASS = {
     "LlamaConfig": LlamaForTraining,
+    "LlamaConfigForSFT": LlamaForSFT,
     "Starcoder2Config": Starcoder2ForTraining,
 }
 
@@ -251,6 +254,20 @@ class DistributedTrainer:
         self.limit_val_batches = self.config.tokens.limit_val_batches
         # NOTE: the dataloader currently in use for the current training stage
         self.current_dataloader: Optional[DataLoader] = None
+
+        # NOTE(tj.solergibert) Flatten batch size in SFT training
+        if isinstance(self.config.data_stages[0].data.dataset, ChatDatasetsArgs) and self.micro_batch_size != 1:
+            self.sequence_length = self.micro_batch_size * self.config.tokens.sequence_length
+            self.micro_batch_size = 1
+            self.global_batch_size = (
+                self.micro_batch_size * self.n_micro_batches_per_batch * self.parallel_context.dp_pg.size()
+            )
+            log_rank(
+                f"Flattening Batch dimension for SFT training. global_batch_size: {self.global_batch_size}, micro_batch_size: {self.micro_batch_size}, sequence_length: {self.sequence_length}",
+                logger=logger,
+                level=logging.INFO,
+                rank=0,
+            )
 
         self.post_init()
 
@@ -670,6 +687,10 @@ class DistributedTrainer:
 
     def _init_model_instance(self) -> NanotronModel:
         model_config_cls = self.model_config.__class__.__name__
+
+        if model_config_cls == "LlamaConfig" and isinstance(self.config.data_stages[0].data.dataset, ChatDatasetsArgs):
+            model_config_cls = "LlamaConfigForSFT"
+
         assert (
             model_config_cls in CONFIG_TO_MODEL_CLASS
         ), f"Unsupported model config {model_config_cls}. Only {CONFIG_TO_MODEL_CLASS.keys()} are supported"
@@ -750,11 +771,12 @@ class DistributedTrainer:
             model_builder=model_builder,
         )
 
+        # TODO(tj.solergibert) Fix this RoPE init only used with LlamaModel for generation?
         # Initialize rotary embeddings
-        for module in model.modules():
-            if not isinstance(module, RotaryEmbedding):
-                continue
-            module.init_rotary_embeddings()
+        # for module in model.modules():
+        #     if not isinstance(module, RotaryEmbedding):
+        #         continue
+        #     module.init_rotary_embeddings()
 
         # Mark some parameters as tied
         self._mark_tied_parameters(model=model, parallel_context=parallel_context, parallel_config=parallel_config)
