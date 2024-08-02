@@ -21,6 +21,7 @@ dependencies = [
     "safetensors",
     "dacite",
     "tqdm",
+    "wandb",
 ]
 
 [tool.setuptools.packages.find]

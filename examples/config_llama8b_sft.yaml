@@ -20,7 +20,7 @@ general:
   benchmark_csv_path: null
   consumed_train_samples: null
   ignore_sanity_checks: true
-  project: SFT
+  project: SFT-Todi
   run: Llama3-8B
   seed: 42
   step: null
@@ -33,17 +33,17 @@ model:
   ddp_bucket_cap_mb: 25
   dtype: bfloat16
   init_method:
-    path: /mloscratch/homes/solergib/converter/nanotron/nanotron_checkpoints/NanotronLlama38B
+    path: /store/swissai/a06/models/nanotron_checkpoints/Meta-Llama-3.1-8B-Instruct
   make_vocab_size_divisible_by: 1
   model_config:
-    bos_token_id: 1
-    eos_token_id: 2
+    bos_token_id: 128000
+    eos_token_id: 128001
     hidden_act: silu
     hidden_size: 4096
     initializer_range: 0.02
     intermediate_size: 14336
     is_llama_config: true
-    max_position_embeddings: 4096
+    max_position_embeddings: 131072
     num_hidden_layers: 32
     num_attention_heads: 32
     num_key_value_heads: 8
@@ -51,7 +51,7 @@ model:
     pretraining_tp: 1
     rope_interleaved: false
     rope_theta: 500000.0
-    rms_norm_eps: 1.0e-06
+    rms_norm_eps: 1.0e-05
     rope_scaling: null
     tie_word_embeddings: false
     use_cache: true
@@ -76,7 +76,7 @@ optimizer:
   weight_decay: 0.01
   zero_stage: 0
 parallelism:
-  dp: 1
+  dp: 4
   expert_parallel_size: 1
   pp: 1
   pp_engine: 1f1b
@@ -86,13 +86,13 @@ parallelism:
 profiler: null
 tokenizer:
   tokenizer_max_length: null
-  tokenizer_name_or_path: meta-llama/Meta-Llama-3-8B-Instruct
+  tokenizer_name_or_path: /store/swissai/a06/models/nanotron_checkpoints/Meta-Llama-3.1-8B-Instruct
   tokenizer_revision: null
 tokens:
   batch_accumulation_per_replica: 1
   limit_test_batches: 0
   limit_val_batches: 0
-  micro_batch_size: 3
+  micro_batch_size: 4
   sequence_length: 4096
   train_steps: 250
   val_check_interval: -1

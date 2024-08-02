@@ -263,7 +263,7 @@ class DistributedTrainer:
                 self.micro_batch_size * self.n_micro_batches_per_batch * self.parallel_context.dp_pg.size()
             )
             log_rank(
-                f"Flattening Batch dimension for SFT training. global_batch_size:{self.global_batch_size}, micro_batch_size: {self.micro_batch_size}, sequence_length: {self.sequence_length}",
+                f"Flattening Batch dimension for SFT training. global_batch_size: {self.global_batch_size}, micro_batch_size: {self.micro_batch_size}, sequence_length: {self.sequence_length}",
                 logger=logger,
                 level=logging.INFO,
                 rank=0,
