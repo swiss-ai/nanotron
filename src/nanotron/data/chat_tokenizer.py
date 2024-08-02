@@ -54,7 +54,9 @@ class ChatTokenizer:
 
         # Append <|end_of_text|> token
         tokens.extend(self.tokenizer.encode("<|end_of_text|>", add_special_tokens=False))
-        is_completitions.append(True)
+        is_completitions.append(
+            False
+        )  # NOTE(tj.solergibert) No need to predict <|end_of_text|> token from <|eot_id|> token
 
         return tokens, is_completitions
 
