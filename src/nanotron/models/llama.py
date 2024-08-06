@@ -211,6 +211,43 @@ class CoreAttention(nn.Module):
         )
 
         return attn_output
+    
+class CoreAttentionFA3(nn.Module):
+    def __init__(self, config: LlamaConfig, parallel_config: Optional[ParallelismArgs], layer_idx: int):
+        super().__init__()
+        # TODO @thomasw21: GPT has a weird `d_kv` config which I'm guessing is essentically a `d_qkv`
+        assert (
+            config.hidden_size % config.num_attention_heads == 0
+        ), f"Hidden size {config.hidden_size} must be divisible by number of attention heads {config.num_attention_heads}."
+        self.d_qk = config.hidden_size // config.num_attention_heads
+        self.d_v = config.hidden_size // config.num_attention_heads
+        self.is_using_mup = config.is_using_mup
+
+        self.checkpoint_attention = False  # Because flash_attn already does checkpointing
+
+    @checkpoint_method(attr_name="checkpoint_attention")
+    def forward(
+        self,
+        query_states: torch.Tensor,  # [batch_size, q_length, n_local_q_heads, inner_dim]
+        key_states: torch.Tensor,  # [batch_size, kv_length, n_local_kv_heads, inner_dim]
+        value_states: torch.Tensor,  # [batch_size, kv_length, n_local_kv_heads, inner_dim]
+    ):
+        from flash_attn_interface import flash_attn_func
+
+        # NOTE: this scale is for µTransfer,
+        # in SP, we use sqrt(1/d_h)
+        softmax_scale = 1 / query_states.shape[-1] if self.is_using_mup else None
+        # For now we are assuming that we use causual mask. No magic here
+        causal = True
+        attn_output = flash_attn_func(
+            q=query_states.contiguous(),
+            k=key_states.contiguous(),
+            v=value_states.contiguous(),
+            softmax_scale=softmax_scale,
+            causal=causal,
+        )
+
+        return attn_output[0]
 
 
 def pad_to_right(tensor, mask, new_tensor=None):
@@ -323,12 +360,19 @@ class CausalSelfAttention(nn.Module, AttachableStore):
             bias=False,
             async_communication=tp_linear_async_communication,
         )
-
-        self.attention = CoreAttention(
+        if config.use_fa3:
+            self.attention = CoreAttentionFA3(
             config,
             parallel_config=parallel_config,
             layer_idx=layer_idx,
-        )
+            )
+        
+        else:
+            self.attention = CoreAttention(
+                config,
+                parallel_config=parallel_config,
+                layer_idx=layer_idx,
+            )
 
         self.prefill_kv_len = (
             config.max_position_embeddings
