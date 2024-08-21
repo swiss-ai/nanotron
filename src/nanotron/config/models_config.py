@@ -55,6 +55,9 @@ class LlamaConfig:
     use_cache: bool = True
     vocab_size: int = 32000
 
+    delta_norm: str = "implicit"  # {"l2_silu", "l1_elu+1", "implicit"}
+    conv_size: int = 4
+
     def __post_init__(self):
         # NOTE: user don't set self._init_method, ModelArgs will set it
         # then we only pass LlamaConfig around

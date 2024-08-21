@@ -227,6 +227,8 @@ class CoreDeltaRule(nn.Module):
         self.is_using_mup = config.is_using_mup
 
         self.checkpoint_attention = False  # Because flash_attn already does checkpointing
+        self.norm_choice = config.delta_norm
+        assert self.norm_choice in {"l2_silu", "l1_elu+1", "implicit"}, "invalid norm choice"
 
     @checkpoint_method(attr_name="checkpoint_attention")
     def forward(
@@ -236,22 +238,19 @@ class CoreDeltaRule(nn.Module):
         value_states: torch.Tensor,  # [batch_size, kv_length, n_local_kv_heads, inner_dim]
         beta_states: torch.Tensor,  # [batch_size, kv_length, n_local_kv_heads],
         BT: int = 16,
-        norm_choice: str = "l2_silu"
     ):
         """ norm_choice: one of {l2_silu, l1_elu, implicit} """
 
         # pip install -U git+https://github.com/sustcsonglin/flash-linear-attention
         from fla.ops.delta_rule import fused_chunk_delta_rule
 
-        assert norm_choice in {"l2_silu", "l1_elu", "implicit"}, "invalid norm choice"
-
-        if norm_choice == "l2_silu":
+        if self.norm_choice == "l2_silu":
             query_states = F.normalize(F.silu(query_states))
             key_states = F.normalize(F.silu(key_states))
-        elif norm_choice == "l1_elu":
+        elif self.norm_choice == "l1_elu+1":
             query_states = F.normalize(F.elu(query_states) + 1., p=1)
             key_states = F.normalize(F.elu(key_states) + 1., p=1)
-        elif norm_choice == "implicit":
+        elif self.norm_choice == "implicit":
             delta_states = beta_states / (1 + beta_states * key_states.square().sum(-1))
             beta_states = delta_states
 
@@ -304,6 +303,8 @@ class CausalDeltaRule(nn.Module, AttachableStore):
         layer_idx: int,
     ):
         super().__init__()
+        from fla.modules.convolution import ShortConvolution
+
         # Tensor parallel considerations: We split tensors along head dimension
         assert (
             config.num_attention_heads % tp_pg.size() == 0
@@ -372,6 +373,13 @@ class CausalDeltaRule(nn.Module, AttachableStore):
             layer_idx=layer_idx,
         )
 
+        # short convs as in parallel deltaNet:
+        # https://github.com/sustcsonglin/flash-linear-attention/blob/main/fla/layers/delta_net.py#L118
+        H = config.num_attention_heads
+        self.conv_q = ShortConvolution(H * self.d_qk, conv_size=config.conv_size, activation=None)
+        self.conv_k = ShortConvolution(H * self.d_qk, conv_size=config.conv_size, activation=None)
+        self.conv_v = ShortConvolution(H * self.d_qk, conv_size=config.conv_size, activation=None)
+
         self.prefill_kv_len = (
             config.max_position_embeddings
         )  # TODO @nouamane: compute based on free memory, because in rope we can surpass max_position_embeddings
@@ -410,15 +418,27 @@ class CausalDeltaRule(nn.Module, AttachableStore):
             beta_states = (
                 beta_states.transpose(0, 1).contiguous().view(batch_size, q_length, self.n_local_kv_heads)
             )
+            raise NotImplementedError("GQA not supported yet for short convs")
         else:
             # FIXME: hypnopump@ this assumes heads are of equal dims and we dont do GQA
             B, L = batch_size, q_length
             H, DH = self.n_local_q_heads, self.d_qk
             # at the end : (b h l d)
-            query_states = qkvb_states.narrow(dim=-1, start=0 * H * DH, length=H*DH).view(L, B, H, DH).permute(1, 2, 0, 3).contiguous()
-            key_states = qkvb_states.narrow(dim=-1, start=1 * H * DH, length=H*DH).view(L, B, H, DH).permute(1, 2, 0, 3).contiguous()
-            value_states = qkvb_states.narrow(dim=-1, start=2 * H * DH, length=H*DH).view(L, B, H, DH).permute(1, 2, 0, 3).contiguous()
+            # query_states = qkvb_states.narrow(dim=-1, start=0 * H * DH, length=H*DH).view(L, B, H, DH).permute(1, 2, 0, 3).contiguous()
+            # key_states = qkvb_states.narrow(dim=-1, start=1 * H * DH, length=H*DH).view(L, B, H, DH).permute(1, 2, 0, 3).contiguous()
+            # value_states = qkvb_states.narrow(dim=-1, start=2 * H * DH, length=H*DH).view(L, B, H, DH).permute(1, 2, 0, 3).contiguous()
+
             beta_states = qkvb_states.narrow(dim=-1, start=3 * H * DH, length=H).view(L, B, H).permute(1, 2, 0).contiguous()
+
+            query_states = qkvb_states.narrow(dim=-1, start=0 * H * DH, length=H * DH).view(L, B, H*DH).transpose(0, 1)
+            key_states = qkvb_states.narrow(dim=-1, start=1 * H * DH, length=H * DH).view(L, B, H*DH).transpose(0, 1)
+            value_states = qkvb_states.narrow(dim=-1, start=2 * H * DH, length=H * DH).view(L, B, H*DH).transpose(0, 1)
+
+            # apply short convs
+            query_states = self.conv_q(query_states).view(B, L, H, DH).transpose(1, 2)
+            key_states = self.conv_q(key_states).view(B, L, H, DH).transpose(1, 2)
+            value_states = self.conv_q(value_states).view(B, L, H, DH).transpose(1, 2)
+
 
         attention_output = self.attention(
             query_states=query_states,
