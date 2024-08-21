@@ -18,6 +18,7 @@ from typing import Dict, Optional, Union, List
 
 import torch
 from torch import nn
+import torch.nn.functional as F
 from torch.utils.checkpoint import CheckpointFunction
 
 from nanotron import distributed as dist
@@ -43,6 +44,7 @@ from nanotron.parallel.tensor_parallel.nn import (
 from nanotron.random import RandomStates
 from nanotron.scaling.parametrization import SpectralMupParametrizator, StandardParametrizator
 from nanotron.utils import checkpoint_method
+
 
 logger = logging.get_logger(__name__)
 
@@ -213,6 +215,58 @@ class CoreAttention(nn.Module):
         return attn_output
 
 
+class CoreDeltaRule(nn.Module):
+    def __init__(self, config: LlamaConfig, parallel_config: Optional[ParallelismArgs], layer_idx: int):
+        super().__init__()
+        # TODO @thomasw21: GPT has a weird `d_kv` config which I'm guessing is essentically a `d_qkv`
+        assert (
+            config.hidden_size % config.num_attention_heads == 0
+        ), f"Hidden size {config.hidden_size} must be divisible by number of attention heads {config.num_attention_heads}."
+        self.d_qk = config.hidden_size // config.num_attention_heads
+        self.d_v = config.hidden_size // config.num_attention_heads
+        self.is_using_mup = config.is_using_mup
+
+        self.checkpoint_attention = False  # Because flash_attn already does checkpointing
+
+    @checkpoint_method(attr_name="checkpoint_attention")
+    def forward(
+        self,
+        query_states: torch.Tensor,  # [batch_size, q_length, n_local_q_heads, inner_dim]
+        key_states: torch.Tensor,  # [batch_size, kv_length, n_local_kv_heads, inner_dim]
+        value_states: torch.Tensor,  # [batch_size, kv_length, n_local_kv_heads, inner_dim]
+        beta_states: torch.Tensor,  # [batch_size, kv_length, n_local_kv_heads],
+        BT: int = 16,
+        norm_choice: str = "l2_silu"
+    ):
+        """ norm_choice: one of {l2_silu, l1_elu, implicit} """
+
+        # pip install -U git+https://github.com/sustcsonglin/flash-linear-attention
+        from fla.ops.delta_rule import fused_chunk_delta_rule
+
+        assert norm_choice in {"l2_silu", "l1_elu", "implicit"}, "invalid norm choice"
+
+        if norm_choice == "l2_silu":
+            query_states = F.normalize(F.silu(query_states))
+            key_states = F.normalize(F.silu(key_states))
+        elif norm_choice == "l1_elu":
+            query_states = F.normalize(F.elu(query_states) + 1., p=1)
+            key_states = F.normalize(F.elu(key_states) + 1., p=1)
+        elif norm_choice == "implicit":
+            delta_states = beta_states / (1 + beta_states * key_states.square().sum(-1))
+            beta_states = delta_states
+
+        attn_output = fused_chunk_delta_rule(
+            q=query_states,
+            k=key_states,
+            v=value_states,
+            beta=beta_states,
+            # TODO: hypnopump@ callibrate this?
+            BT=BT,
+        )
+
+        return attn_output
+
+
 def pad_to_right(tensor, mask, new_tensor=None):
     """Transform a left-padded tensor into a right-padded tensor. (Useful for prefilling key/value states)
     Args:
@@ -239,6 +293,148 @@ def pad_to_right(tensor, mask, new_tensor=None):
     # We fill the new tensor with the useful values
     new_tensor[:, : right_padded_mask.shape[1], :, :][right_padded_mask] = useful_values
     return new_tensor, right_padded_mask
+
+
+class CausalDeltaRule(nn.Module, AttachableStore):
+    def __init__(
+        self,
+        config: LlamaConfig,
+        parallel_config: Optional[ParallelismArgs],
+        tp_pg: dist.ProcessGroup,
+        layer_idx: int,
+    ):
+        super().__init__()
+        # Tensor parallel considerations: We split tensors along head dimension
+        assert (
+            config.num_attention_heads % tp_pg.size() == 0
+        ), f"Number of attention heads ({config.num_attention_heads}) must be divisible by TP size ({tp_pg.size()})."
+        try:
+            assert (
+                config.num_key_value_heads % tp_pg.size() == 0
+            ), f"Number of key/value heads ({config.num_key_value_heads}) must be divisible by TP size ({tp_pg.size()})."
+        except AttributeError:
+            log_rank(
+                "WARNING: num_key_value_heads not defined, assuming it is equal to num_attention_heads",
+                logger=logger,
+                level=logging.WARNING,
+                rank=0,
+            )
+            # If num_key_value_heads is not defined, we assume that it is equal to num_attention_heads
+            config.num_key_value_heads = config.num_attention_heads
+        assert (
+            config.num_attention_heads % config.num_key_value_heads == 0
+        ), f"Number of attention heads ({config.num_attention_heads}) must be divisible by number of key/value heads ({config.num_key_value_heads})."
+        self.n_local_q_heads = config.num_attention_heads // tp_pg.size()
+        self.n_local_kv_heads = config.num_key_value_heads // tp_pg.size()
+        self.n_repeats = config.num_attention_heads // config.num_key_value_heads
+        self.is_gqa = config.num_attention_heads != config.num_key_value_heads  # Whether we are using GQA or not
+        self.d_qk = config.hidden_size // config.num_attention_heads
+        self.d_v = config.hidden_size // config.num_attention_heads
+        self.d_model = config.hidden_size
+        self.is_using_mup = config.is_using_mup
+
+        # TODO @thomasw21: refactor so that we store that default in a single place.
+        tp_mode = parallel_config.tp_mode if parallel_config is not None else TensorParallelLinearMode.ALL_REDUCE
+        tp_linear_async_communication = (
+            parallel_config.tp_linear_async_communication if parallel_config is not None else False
+        )
+
+        # build the slice config for self.qkv for save/load
+        # shard are done within the contiguous chunk
+        qkv_contiguous_chunks = (
+            config.num_attention_heads * self.d_qk,  # shape of q
+            config.num_key_value_heads * self.d_qk,  # shape of k
+            config.num_key_value_heads * self.d_qk,  # shape of v
+        )
+        self.qkvb_proj = TensorParallelColumnLinear(
+            self.d_model,
+            # FIXME: hypnopump@ add beta projection as fused in here
+            config.num_attention_heads * self.d_qk + 2 * config.num_key_value_heads * (self.d_qk + 1),
+            pg=tp_pg,
+            mode=tp_mode,
+            bias=False,
+            async_communication=tp_linear_async_communication,
+            contiguous_chunks=qkv_contiguous_chunks,
+        )
+
+        self.o_proj = TensorParallelRowLinear(
+            config.num_attention_heads * self.d_qk,
+            self.d_model,
+            pg=tp_pg,
+            mode=tp_mode,
+            bias=False,
+            async_communication=tp_linear_async_communication,
+        )
+
+        self.attention = CoreDeltaRule(
+            config,
+            parallel_config=parallel_config,
+            layer_idx=layer_idx,
+        )
+
+        self.prefill_kv_len = (
+            config.max_position_embeddings
+        )  # TODO @nouamane: compute based on free memory, because in rope we can surpass max_position_embeddings
+
+    def forward(
+        self,
+        hidden_states,  # [seq_length, batch_size, hidden_size]
+        sequence_mask,  # [batch_size, seq_length]
+    ):
+        qkvb_states = self.qkvb_proj(
+            hidden_states
+        )  # [seq_length, batch_size, n_local_q_heads * d_qk + 2 * n_local_kv_heads * d_qk]
+        q_length, batch_size, _ = qkvb_states.shape
+
+        if self.is_gqa:
+            query_states, key_states, value_states, beta_states = torch.split(
+                qkvb_states,
+                [
+                    self.n_local_q_heads * self.d_qk,
+                    self.n_local_kv_heads * self.d_qk,
+                    self.n_local_kv_heads * self.d_qk,
+                    self.n_local_kv_heads,
+                ],
+                dim=-1,
+            )
+
+            query_states = (
+                query_states.transpose(0, 1).contiguous().view(batch_size, q_length, self.n_local_q_heads, self.d_qk)
+            )
+            key_states = (
+                key_states.transpose(0, 1).contiguous().view(batch_size, q_length, self.n_local_kv_heads, self.d_qk)
+            )
+            value_states = (
+                value_states.transpose(0, 1).contiguous().view(batch_size, q_length, self.n_local_kv_heads, self.d_qk)
+            )
+            beta_states = (
+                beta_states.transpose(0, 1).contiguous().view(batch_size, q_length, self.n_local_kv_heads)
+            )
+        else:
+            # FIXME: hypnopump@ this assumes heads are of equal dims and we dont do GQA
+            B, L = batch_size, q_length
+            H, DH = self.n_local_q_heads, self.d_qk
+            # at the end : (b h l d)
+            query_states = qkvb_states.narrow(dim=-1, start=0 * H * DH, length=H*DH).view(L, B, H, DH).permute(1, 2, 0, 3).contiguous()
+            key_states = qkvb_states.narrow(dim=-1, start=1 * H * DH, length=H*DH).view(L, B, H, DH).permute(1, 2, 0, 3).contiguous()
+            value_states = qkvb_states.narrow(dim=-1, start=2 * H * DH, length=H*DH).view(L, B, H, DH).permute(1, 2, 0, 3).contiguous()
+            beta_states = qkvb_states.narrow(dim=-1, start=3 * H * DH, length=H).view(L, B, H).permute(1, 2, 0).contiguous()
+
+        attention_output = self.attention(
+            query_states=query_states,
+            key_states=key_states,
+            value_states=value_states,
+            beta_states=beta_states.sigmoid(),
+        )
+        # (b h l d -> b l h d)
+        attention_output = attention_output.transpose(1, 2)
+
+        attention_output = (
+            attention_output.contiguous().view(batch_size, q_length, self.n_local_q_heads * self.d_v).transpose(0, 1)
+        )
+        output = self.o_proj(attention_output)
+
+        return {"hidden_states": output, "sequence_mask": sequence_mask}
 
 
 class CausalSelfAttention(nn.Module, AttachableStore):
@@ -583,7 +779,14 @@ class LlamaDecoderLayer(nn.Module):
     ):
         super().__init__()
         self.input_layernorm = TritonRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
-        self.attn = CausalSelfAttention(
+        # self.attn = CausalSelfAttention(
+        #     config=config,
+        #     parallel_config=parallel_config,
+        #     tp_pg=tp_pg,
+        #     layer_idx=layer_idx,
+        # )
+
+        self.attn = CausalDeltaRule(
             config=config,
             parallel_config=parallel_config,
             tp_pg=tp_pg,
