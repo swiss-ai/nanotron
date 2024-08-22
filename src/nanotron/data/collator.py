@@ -22,8 +22,10 @@ def build_position_ids_and_label_mask(input_ids, sequence_length):
     for sample in input_ids:
         # Position ids
         document_ends = (sample == LLAMA3_EOS_TOKEN).nonzero().flatten().tolist()
-        document_ends.append(sequence_length)
-        lengths = [end - start for start, end in zip([0] + document_ends[:-1], document_ends)]
+        document_ends.append(sequence_length - 1)
+        lengths = [
+            end - start for start, end in zip([-1] + document_ends[:-1], document_ends)
+        ]  # NOTE(tj.solergibert) -1 Is a hack to correct the first length
         position_ids_list.append(build_position_ids(lengths))
 
         # Label ids
