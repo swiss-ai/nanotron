@@ -15,6 +15,7 @@ logger = logging.get_logger(__name__)
 def build_nanoset_dataloader(
     dataset,
     sequence_length: int,
+    remove_document_xattention: bool,
     parallel_context: ParallelContext,
     input_pp_rank: int,
     output_pp_rank: int,
@@ -37,6 +38,7 @@ def build_nanoset_dataloader(
         input_pp_rank=input_pp_rank,
         output_pp_rank=output_pp_rank,
         parallel_context=parallel_context,
+        remove_document_xattention=remove_document_xattention,
     )
 
     # Compute size and rank of dataloader workers

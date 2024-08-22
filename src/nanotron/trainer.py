@@ -688,7 +688,10 @@ class DistributedTrainer:
     def _init_model_instance(self) -> NanotronModel:
         model_config_cls = self.model_config.__class__.__name__
 
-        if model_config_cls == "LlamaConfig" and isinstance(self.config.data_stages[0].data.dataset, ChatDatasetsArgs):
+        if model_config_cls == "LlamaConfig" and (
+            isinstance(self.config.data_stages[0].data.dataset, ChatDatasetsArgs)
+            or self.config.data_stages[0].data.dataset.remove_document_xattention
+        ):
             model_config_cls = "LlamaConfigForSFT"
 
         assert (

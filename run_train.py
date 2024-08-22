@@ -163,6 +163,7 @@ def get_dataloader_from_data_stage(
         train_dataloader = build_nanoset_dataloader(
             train_dataset,
             trainer.sequence_length,
+            remove_document_xattention=data.dataset.remove_document_xattention,
             parallel_context=trainer.parallel_context,
             input_pp_rank=input_pp_rank,
             output_pp_rank=output_pp_rank,

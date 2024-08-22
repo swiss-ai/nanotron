@@ -1,8 +1,6 @@
 from typing import List
 
 import numpy as np
-from datasets import load_dataset
-from datasets.distributed import split_dataset_by_node
 from nanotron.data.chat_tokenizer import ChatTokenizer
 from nanotron.data.collator import (
     build_labels,
@@ -12,6 +10,9 @@ from nanotron.data.collator import (
 )
 from torch.utils.data import IterableDataset
 from transformers import AutoTokenizer
+
+from datasets import load_dataset
+from datasets.distributed import split_dataset_by_node
 
 
 class ChatDataset(IterableDataset):
@@ -116,10 +117,10 @@ class ChatDataset(IterableDataset):
                     buffer_lengths = [len(tokens)]
 
                     # TODO(tj.solergibert) Delete (debug), just 4 switching the training only on completitions setting
-                    sample_completitions = self.create_labels(sample_tokens, sample_completitions)
+                    sample_completitions = self.create_labels(sample_completitions)
 
                     # TODO(tj.solergibert) Delete (debug), just 4 switching the remove cross-attention setting
-                    position_ids = self.create_position_ids(sample_lengths, self.sequence_length)
+                    position_ids = self.create_position_ids(sample_lengths)
 
                     # TODO(tj.solergibert) Delete (debug)
                     # assert len(sample_tokens) <= max_buffer_token_len

@@ -98,7 +98,9 @@ def main(args):
             dataset_options={"split": args.split},
         )
     elif args.readers == "parquet":
-        datatrove_reader = ParquetReader(data_folder=args.dataset, text_key=args.column, glob_pattern=args.glob_pattern)
+        datatrove_reader = ParquetReader(
+            data_folder=args.dataset, text_key=args.column, glob_pattern=args.glob_pattern
+        )
     else:
         datatrove_reader = JsonlReader(data_folder=args.dataset, text_key=args.column, glob_pattern=args.glob_pattern)
 
@@ -109,6 +111,7 @@ def main(args):
                 output_folder=args.output_folder,
                 tokenizer_name_or_path=args.tokenizer_name_or_path,
                 eos_token=args.eos_token,
+                shuffle=False,
                 max_tokens_per_file=1e9,
             ),
         ],
