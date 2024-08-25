@@ -557,6 +557,8 @@ class DistributedTrainer:
         dist.barrier()
         torch.cuda.synchronize()
         elapsed_time_per_iteration_ms = (time.time() - self.iteration_start_time) * 1000
+        running_time = self.iteration_step * elapsed_time_per_iteration_ms / 1000
+        remaining_time = (self.config.tokens.train_steps - self.iteration_step) * elapsed_time_per_iteration_ms / 1000
         tokens_per_sec = (
             self.global_batch_size * self.sequence_length / (elapsed_time_per_iteration_ms / 1000)
         )  # tokens_per_sec is calculated using sequence_length
@@ -588,6 +590,8 @@ class DistributedTrainer:
                 LogItem("lr", lr, "human_format"),  # , ".3E"),
                 LogItem("model_tflops_per_gpu", model_tflops, "human_format"),  # , ".2f"),
                 LogItem("hardware_tflops_per_gpu", hardware_tflops, "human_format"),  # , ".2f"),
+                LogItem("running_time", running_time, "human_format"),
+                LogItem("remaining_eta", remaining_time, "human_format"),
             ]
 
             if self.config.optimizer.clip_grad is not None:

@@ -14,11 +14,11 @@
 # limitations under the License.
 """PyTorch LLaMa model."""
 
-from typing import Dict, Optional, Union, List
+from typing import Dict, List, Optional, Union
 
 import torch
-from torch import nn
 import torch.nn.functional as F
+from torch import nn
 from torch.utils.checkpoint import CheckpointFunction
 
 from nanotron import distributed as dist
@@ -44,7 +44,6 @@ from nanotron.parallel.tensor_parallel.nn import (
 from nanotron.random import RandomStates
 from nanotron.scaling.parametrization import SpectralMupParametrizator, StandardParametrizator
 from nanotron.utils import checkpoint_method
-
 
 logger = logging.get_logger(__name__)
 
@@ -239,7 +238,7 @@ class CoreDeltaRule(nn.Module):
         beta_states: torch.Tensor,  # [batch_size, kv_length, n_local_kv_heads],
         BT: int = 16,
     ):
-        """ norm_choice: one of {l2_silu, l1_elu, implicit} """
+        """norm_choice: one of {l2_silu, l1_elu, implicit}"""
 
         # pip install -U git+https://github.com/sustcsonglin/flash-linear-attention
         from fla.ops.delta_rule import fused_chunk_delta_rule
@@ -248,13 +247,13 @@ class CoreDeltaRule(nn.Module):
             query_states = F.normalize(F.silu(query_states))
             key_states = F.normalize(F.silu(key_states))
         elif self.norm_choice == "l1_elu+1":
-            query_states = F.normalize(F.elu(query_states) + 1., p=1)
-            key_states = F.normalize(F.elu(key_states) + 1., p=1)
+            query_states = F.normalize(F.elu(query_states) + 1.0, p=1)
+            key_states = F.normalize(F.elu(key_states) + 1.0, p=1)
         elif self.norm_choice == "implicit":
             delta_states = beta_states / (1 + beta_states * key_states.square().sum(-1))
             beta_states = delta_states
 
-        attn_output = fused_chunk_delta_rule(
+        attn_output, state = fused_chunk_delta_rule(
             q=query_states,
             k=key_states,
             v=value_states,
@@ -346,11 +345,14 @@ class CausalDeltaRule(nn.Module, AttachableStore):
             config.num_attention_heads * self.d_qk,  # shape of q
             config.num_key_value_heads * self.d_qk,  # shape of k
             config.num_key_value_heads * self.d_qk,  # shape of v
+            config.num_key_value_heads,  # shape of beta
         )
         self.qkvb_proj = TensorParallelColumnLinear(
             self.d_model,
             # FIXME: hypnopump@ add beta projection as fused in here
-            config.num_attention_heads * self.d_qk + 2 * config.num_key_value_heads * (self.d_qk + 1),
+            config.num_attention_heads * self.d_qk
+            + 2 * config.num_key_value_heads * self.d_qk
+            + config.num_key_value_heads,
             pg=tp_pg,
             mode=tp_mode,
             bias=False,
@@ -376,9 +378,19 @@ class CausalDeltaRule(nn.Module, AttachableStore):
         # short convs as in parallel deltaNet:
         # https://github.com/sustcsonglin/flash-linear-attention/blob/main/fla/layers/delta_net.py#L118
         H = config.num_attention_heads
-        self.conv_q = ShortConvolution(H * self.d_qk, conv_size=config.conv_size, activation=None)
-        self.conv_k = ShortConvolution(H * self.d_qk, conv_size=config.conv_size, activation=None)
-        self.conv_v = ShortConvolution(H * self.d_qk, conv_size=config.conv_size, activation=None)
+        # FIXME: conv1d doesnt build in arm64 by default: https://github.com/Dao-AILab/causal-conv1d/blob/main/setup.py#L55
+        self.conv_q = ShortConvolution(
+            H * self.d_qk, kernel_size=config.conv_size, activation=None, use_fast_conv1d=False
+        )
+        self.conv_k = ShortConvolution(
+            H * self.d_qk, kernel_size=config.conv_size, activation=None, use_fast_conv1d=False
+        )
+        self.conv_v = ShortConvolution(
+            H * self.d_qk, kernel_size=config.conv_size, activation=None, use_fast_conv1d=False
+        )
+        self.conv_q = torch.nn.Identity()
+        self.conv_k = torch.nn.Identity()
+        self.conv_v = torch.nn.Identity()
 
         self.prefill_kv_len = (
             config.max_position_embeddings
@@ -415,9 +427,7 @@ class CausalDeltaRule(nn.Module, AttachableStore):
             value_states = (
                 value_states.transpose(0, 1).contiguous().view(batch_size, q_length, self.n_local_kv_heads, self.d_qk)
             )
-            beta_states = (
-                beta_states.transpose(0, 1).contiguous().view(batch_size, q_length, self.n_local_kv_heads)
-            )
+            beta_states = beta_states.transpose(0, 1).contiguous().view(batch_size, q_length, self.n_local_kv_heads)
             raise NotImplementedError("GQA not supported yet for short convs")
         else:
             # FIXME: hypnopump@ this assumes heads are of equal dims and we dont do GQA
@@ -428,17 +438,22 @@ class CausalDeltaRule(nn.Module, AttachableStore):
             # key_states = qkvb_states.narrow(dim=-1, start=1 * H * DH, length=H*DH).view(L, B, H, DH).permute(1, 2, 0, 3).contiguous()
             # value_states = qkvb_states.narrow(dim=-1, start=2 * H * DH, length=H*DH).view(L, B, H, DH).permute(1, 2, 0, 3).contiguous()
 
-            beta_states = qkvb_states.narrow(dim=-1, start=3 * H * DH, length=H).view(L, B, H).permute(1, 2, 0).contiguous()
+            beta_states = (
+                qkvb_states.narrow(dim=-1, start=3 * H * DH, length=H).view(L, B, H).permute(1, 2, 0).contiguous()
+            )
 
-            query_states = qkvb_states.narrow(dim=-1, start=0 * H * DH, length=H * DH).view(L, B, H*DH).transpose(0, 1)
-            key_states = qkvb_states.narrow(dim=-1, start=1 * H * DH, length=H * DH).view(L, B, H*DH).transpose(0, 1)
-            value_states = qkvb_states.narrow(dim=-1, start=2 * H * DH, length=H * DH).view(L, B, H*DH).transpose(0, 1)
+            query_states = (
+                qkvb_states.narrow(dim=-1, start=0 * H * DH, length=H * DH).view(L, B, H * DH).transpose(0, 1)
+            )
+            key_states = qkvb_states.narrow(dim=-1, start=1 * H * DH, length=H * DH).view(L, B, H * DH).transpose(0, 1)
+            value_states = (
+                qkvb_states.narrow(dim=-1, start=2 * H * DH, length=H * DH).view(L, B, H * DH).transpose(0, 1)
+            )
 
             # apply short convs
             query_states = self.conv_q(query_states).view(B, L, H, DH).transpose(1, 2)
             key_states = self.conv_q(key_states).view(B, L, H, DH).transpose(1, 2)
             value_states = self.conv_q(value_states).view(B, L, H, DH).transpose(1, 2)
-
 
         attention_output = self.attention(
             query_states=query_states,
@@ -815,9 +830,9 @@ class LlamaDecoderLayer(nn.Module):
 
         self.post_attention_layernorm = TritonRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         self.mlp = MLP(config=config, parallel_config=parallel_config, tp_pg=tp_pg)
-        
+
         self.recompute_layer = parallel_config.recompute_layer
-        
+
     def _core_forward(
         self,
         hidden_states: Union[torch.Tensor, TensorPointer],
@@ -836,12 +851,12 @@ class LlamaDecoderLayer(nn.Module):
         hidden_states = hidden_states + residual
 
         return hidden_states, output["sequence_mask"]
-        
+
     def _checkpointed_forward(
         self,
         hidden_states: torch.Tensor,
         sequence_mask: torch.Tensor,
-        ) -> List[torch.Tensor]:
+    ) -> List[torch.Tensor]:
         return CheckpointFunction.apply(self._core_forward, True, hidden_states, sequence_mask)
 
     def forward(
@@ -849,7 +864,7 @@ class LlamaDecoderLayer(nn.Module):
         hidden_states: Union[torch.Tensor, TensorPointer],
         sequence_mask: Union[torch.Tensor, TensorPointer],
     ) -> Dict[str, Union[torch.Tensor, TensorPointer]]:
-        
+
         if self.recompute_layer and not isinstance(hidden_states, TensorPointer):
             hidden_states, sequence_mask = self._checkpointed_forward(hidden_states, sequence_mask)
         else:
@@ -859,6 +874,7 @@ class LlamaDecoderLayer(nn.Module):
             "hidden_states": hidden_states,
             "sequence_mask": sequence_mask,
         }
+
 
 class Embedding(nn.Module, AttachableStore):
     def __init__(self, tp_pg: dist.ProcessGroup, config: LlamaConfig, parallel_config: Optional[ParallelismArgs]):
