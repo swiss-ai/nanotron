@@ -1,18 +1,19 @@
 """
-torchrun --nproc-per-node 1 tools/check_sft.py
+torchrun --nproc-per-node 1 tools/check_remove_xattention.py
 """
 import numpy as np
 import torch
 from nanotron.config import ParallelismArgs
 from nanotron.config.models_config import LlamaConfig as LlamaConfigNanotron
-from nanotron.data.chat_dataset import ChatDataset
-from nanotron.data.dataloader_builder import build_chat_dataloader
+from nanotron.data.dataloader_builder import build_nanoset_dataloader
+from nanotron.data.nanoset import Nanoset
 from nanotron.models import build_model
 from nanotron.models.llama_sft import LlamaForSFT
 from nanotron.parallel import ParallelContext
 from nanotron.parallel.pipeline_parallel.engine import AllForwardAllBackwardPipelineEngine
 from nanotron.parallel.tensor_parallel.nn import TensorParallelLinearMode
 from nanotron.trainer import mark_tied_parameters
+from nanotron.utils import main_rank_first
 from torch.nn import CrossEntropyLoss
 from torch.testing import assert_close
 from transformers import AutoModelForCausalLM, LlamaConfig
@@ -20,6 +21,7 @@ from transformers import AutoModelForCausalLM, LlamaConfig
 dtype = torch.bfloat16
 device = torch.device("cuda")
 PATH_TO_LLAMA = "meta-llama/Meta-Llama-3.1-8B-Instruct"
+PATH_TO_DATATROVE_DATASET = "/mloscratch/homes/solergib/SFT/nanotron/datasets/SlimPajama-6B"
 
 # NOTE(tj.solergibert) This script is for testing porpuses. ONLY use 1 GPU
 DP = 1
@@ -197,25 +199,27 @@ def main():
     with torch.no_grad():
         nanotron_model.model.lm_head.pp_block.weight.copy_(hf_model.lm_head.weight)  # = hf_model.lm_head.weight
 
-    # Create ChatDataloaders
-    train_dataset = ChatDataset(
-        dataset_path="Magpie-Align/Magpie-Pro-300K-Filtered",  # "Open-Orca/SlimOrca",
-        tokenizer_name_or_path=PATH_TO_LLAMA,
-        sequence_length=2048,
-        train_on_completions_only=False,
-        remove_cross_attention=True,
-        split="train",
-        conversation_column_name="conversations",
-        dp_rank=parallel_context.dp_pg.rank(),
-        dp_ranks_size=parallel_context.dp_pg.size(),
-    )
+    # Create Nanoset
+    with main_rank_first(parallel_context.world_pg):
+        train_dataset = Nanoset(
+            dataset_folders=PATH_TO_DATATROVE_DATASET,
+            sequence_length=4096,
+            token_size=4,
+            train_split_num_samples=10000000,
+        )
 
     # Prepare dataloader
-    train_dataloader = build_chat_dataloader(
-        dataset=train_dataset,
+    train_dataloader = build_nanoset_dataloader(
+        train_dataset,
+        4096,
+        remove_document_xattention=True,
         parallel_context=parallel_context,
         input_pp_rank=0,
         output_pp_rank=0,
+        micro_batch_size=1,
+        consumed_train_samples=0,
+        dataloader_num_workers=0,
+        dataloader_drop_last=True,
     )
 
     hf_model.eval()
@@ -241,7 +245,7 @@ def main():
         # This will always fail! We aren't performing the SAME operations. Nanotron packs QKV matrices, MLP & LayerNorm is different. So we don't have to focus on MATCHING LOGITS BUT GENERATIONS
         # assert_close(output_hf.logits, output_nanotron.transpose(0, 1), rtol=1e-1, atol=1e-1)
 
-        predicted_tokens = [62, 92, 125, 425, 744, 912, 1299]
+        predicted_tokens = [62, 92, 132, 428, 744, 912, 1288]
         for predicted_token in predicted_tokens:
             print(predicted_token)
             next_tokens_hf = torch.softmax(output_hf.logits[0, predicted_token, :], -1)

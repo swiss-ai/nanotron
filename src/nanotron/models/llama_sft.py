@@ -18,6 +18,7 @@ from typing import Dict, Optional, Union
 
 import torch
 from flash_attn import flash_attn_varlen_func
+from liger_kernel.transformers.rope import liger_rotary_pos_emb
 from torch import nn
 
 from nanotron import distributed as dist
@@ -339,7 +340,11 @@ class CausalSelfAttention(nn.Module, AttachableStore):
         # TODO(tj.solergibert) Apply RoPE embeddings WITHOUT too many transpose...
         query_states, key_states = query_states.transpose(1, 2), key_states.transpose(1, 2)
         # Apply RoPE
-        query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin)
+        if True:
+            query_states, key_states = liger_rotary_pos_emb(query_states, key_states, cos, sin)
+        else:
+            query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin)
+
         query_states, key_states = query_states.transpose(1, 2), key_states.transpose(1, 2)
 
         # Prepare varlen args
