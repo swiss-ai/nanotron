@@ -18,7 +18,6 @@ from typing import Dict, Optional, Union
 
 import torch
 from flash_attn import flash_attn_varlen_func
-from liger_kernel.transformers.rope import liger_rotary_pos_emb
 from torch import nn
 
 from nanotron import distributed as dist
@@ -26,6 +25,8 @@ from nanotron import logging
 from nanotron.config import Config, LlamaConfig, ParallelismArgs
 from nanotron.config.models_config import RandomInit, SpectralMupInit
 from nanotron.generation.generate_store import AttachableStore
+from nanotron.kernels.rope import liger_rotary_pos_emb
+from nanotron.kernels.swiglu import LigerSiLUMulFunction
 from nanotron.logging import log_rank
 from nanotron.models import NanotronModel
 from nanotron.nn.activations import ACT2FN
@@ -54,7 +55,8 @@ logger = logging.get_logger(__name__)
 ## support the poisiton ids necessary for the cross attention feature. The cos &  ##
 ## sin are created in the embedding layer and propagated through the pipeline so  ##
 ## we don't have a RoPE layer in each and every decoder layer. Then in each and   ##
-## every decoder layer we apply the cos & sin to Q & K with `apply_rotary_pos_emb`##
+## every decoder layer we apply the cos & sin to Q & K with `liger_rotary_pos_emb`##
+## from linkedin/Liger-Kernel                                                     ##
 ####################################################################################
 
 # NOTE(tj.solergibert) Copied from https://github.com/huggingface/transformers/blob/81233c069c166af033794134bd8888783ac49ebe/src/transformers/modeling_rope_utils.py#L29
@@ -112,39 +114,6 @@ class LlamaRotaryEmbedding(nn.Module):
         return cos.to(dtype=x.dtype), sin.to(dtype=x.dtype)
 
 
-def rotate_half(x):
-    """Rotates half the hidden dims of the input."""
-    x1 = x[..., : x.shape[-1] // 2]
-    x2 = x[..., x.shape[-1] // 2 :]
-    return torch.cat((-x2, x1), dim=-1)
-
-
-# NOTE(tj.solergibert) FlashAttention RoPEs are faster (triton), but currently they don't support position_ids
-def apply_rotary_pos_emb(q, k, cos, sin, unsqueeze_dim=1):
-    """Applies Rotary Position Embedding to the query and key tensors.
-
-    Args:
-        q (torch.Tensor): The query tensor.
-        k (torch.Tensor): The key tensor.
-        cos (torch.Tensor): The cosine part of the rotary embedding.
-        sin (torch.Tensor): The sine part of the rotary embedding.
-        unsqueeze_dim (int, *optional*, defaults to 1):
-            The 'unsqueeze_dim' argument specifies the dimension along which to unsqueeze cos[position_ids] and
-            sin[position_ids] so that they can be properly broadcasted to the dimensions of q and k. For example, note
-            that cos[position_ids] and sin[position_ids] have the shape [batch_size, seq_len, head_dim]. Then, if q and
-            k have the shape [batch_size, heads, seq_len, head_dim], then setting unsqueeze_dim=1 makes
-            cos[position_ids] and sin[position_ids] broadcastable to the shapes of q and k. Similarly, if q and k have
-            the shape [batch_size, seq_len, heads, head_dim], then set unsqueeze_dim=2.
-    Returns:
-        tuple (torch.Tensor) comprising of the query and key tensors rotated using the Rotary Position Embedding.
-    """
-    cos = cos.unsqueeze(unsqueeze_dim)
-    sin = sin.unsqueeze(unsqueeze_dim)
-    q_embed = (q * cos) + (rotate_half(q) * sin)
-    k_embed = (k * cos) + (rotate_half(k) * sin)
-    return q_embed, k_embed
-
-
 def prepare_varlen_args(position_ids):
     position_ids = position_ids.flatten()
     indices_q = torch.arange(position_ids.size(0), device=position_ids.device, dtype=torch.int32)
@@ -188,19 +157,24 @@ class MLP(nn.Module):
             parallel_config.tp_linear_async_communication if parallel_config is not None else False
         )
 
-        gate_up_contiguous_chunks = (
-            config.intermediate_size,  # shape of gate_linear
-            config.intermediate_size,  # shape of up_linear
-        )
-        self.gate_up_proj = TensorParallelColumnLinear(
+        self.gate_proj = TensorParallelColumnLinear(
             config.hidden_size,
-            2 * config.intermediate_size,
+            config.intermediate_size,
             pg=tp_pg,
             mode=tp_mode,
             bias=False,
             async_communication=tp_linear_async_communication,
-            contiguous_chunks=gate_up_contiguous_chunks,
         )
+
+        self.up_proj = TensorParallelColumnLinear(
+            config.hidden_size,
+            config.intermediate_size,
+            pg=tp_pg,
+            mode=tp_mode,
+            bias=False,
+            async_communication=tp_linear_async_communication,
+        )
+
         self.down_proj = TensorParallelRowLinear(
             config.intermediate_size,
             config.hidden_size,
@@ -209,13 +183,10 @@ class MLP(nn.Module):
             bias=False,
             async_communication=tp_linear_async_communication and tp_mode is TensorParallelLinearMode.REDUCE_SCATTER,
         )
-        # TODO @nouamane: why can't we torch.jit.script GLUActivation?
-        self.split_silu_mul = GLUActivation(config.hidden_act)
 
     def forward(self, hidden_states):  # [seq_length, batch_size, hidden_dim]
-        merged_states = self.gate_up_proj(hidden_states)
-        hidden_states = self.down_proj(self.split_silu_mul(merged_states))
-        return hidden_states
+
+        return self.down_proj(LigerSiLUMulFunction.apply(self.gate_proj(hidden_states), self.up_proj(hidden_states)))
 
 
 class CausalSelfAttention(nn.Module, AttachableStore):
@@ -337,15 +308,8 @@ class CausalSelfAttention(nn.Module, AttachableStore):
                 .contiguous()
             )  # [3, batch_size, seq_length, n_local_q_heads, d_qk]
 
-        # TODO(tj.solergibert) Apply RoPE embeddings WITHOUT too many transpose...
-        query_states, key_states = query_states.transpose(1, 2), key_states.transpose(1, 2)
         # Apply RoPE
-        if True:
-            query_states, key_states = liger_rotary_pos_emb(query_states, key_states, cos, sin)
-        else:
-            query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin)
-
-        query_states, key_states = query_states.transpose(1, 2), key_states.transpose(1, 2)
+        query_states, key_states = liger_rotary_pos_emb(query_states, key_states, cos, sin)
 
         # Prepare varlen args
         cu_seqlens, max_seqlen_in_batch = prepare_varlen_args(position_ids)

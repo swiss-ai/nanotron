@@ -20,8 +20,8 @@ from transformers import AutoModelForCausalLM, LlamaConfig
 
 dtype = torch.bfloat16
 device = torch.device("cuda")
-PATH_TO_LLAMA = "meta-llama/Meta-Llama-3.1-8B-Instruct"
-PATH_TO_DATATROVE_DATASET = "/mloscratch/homes/solergib/SFT/nanotron/datasets/SlimPajama-6B"
+PATH_TO_LLAMA = "/store/swissai/a06/models/Meta-Llama-3.1-8B"
+PATH_TO_DATATROVE_DATASET = "/store/swissai/a06/datasets_raw/SlimPajama-6B-eos"
 
 # NOTE(tj.solergibert) This script is for testing porpuses. ONLY use 1 GPU
 DP = 1
@@ -154,20 +154,26 @@ def main():
                 hf_model.model.layers[i].self_attn.o_proj.weight
             )  #  = hf_model.model.layers[i].self_attn.o_proj.weight
         # MLP
-        ## Gate Up Proj
-        tmp_gate_up_proj = torch.cat(
-            [
-                hf_model.model.layers[i].mlp.gate_proj.weight,
-                hf_model.model.layers[i].mlp.up_proj.weight,
-            ],
-            dim=0,
+        ## Gate Proj
+        assert (
+            hf_model.model.layers[i].mlp.gate_proj.weight.shape
+            == nanotron_model.model.decoder[i].pp_block.mlp.gate_proj.weight.shape
         )
-
-        assert tmp_gate_up_proj.shape == nanotron_model.model.decoder[i].pp_block.mlp.gate_up_proj.weight.shape
         with torch.no_grad():
-            nanotron_model.model.decoder[i].pp_block.mlp.gate_up_proj.weight.copy_(
-                tmp_gate_up_proj
-            )  #  = tmp_gate_up_proj
+            nanotron_model.model.decoder[i].pp_block.mlp.gate_proj.weight.copy_(
+                hf_model.model.layers[i].mlp.gate_proj.weight
+            )
+
+        ## Up Proj
+        assert (
+            hf_model.model.layers[i].mlp.up_proj.weight.shape
+            == nanotron_model.model.decoder[i].pp_block.mlp.up_proj.weight.shape
+        )
+        with torch.no_grad():
+            nanotron_model.model.decoder[i].pp_block.mlp.up_proj.weight.copy_(
+                hf_model.model.layers[i].mlp.up_proj.weight
+            )
+
         ## Down Proj
         assert (
             hf_model.model.layers[i].mlp.down_proj.weight.shape
@@ -245,7 +251,7 @@ def main():
         # This will always fail! We aren't performing the SAME operations. Nanotron packs QKV matrices, MLP & LayerNorm is different. So we don't have to focus on MATCHING LOGITS BUT GENERATIONS
         # assert_close(output_hf.logits, output_nanotron.transpose(0, 1), rtol=1e-1, atol=1e-1)
 
-        predicted_tokens = [62, 92, 132, 428, 744, 912, 1288]
+        predicted_tokens = [33, 95, 132, 428, 744, 912, 1288]
         for predicted_token in predicted_tokens:
             print(predicted_token)
             next_tokens_hf = torch.softmax(output_hf.logits[0, predicted_token, :], -1)

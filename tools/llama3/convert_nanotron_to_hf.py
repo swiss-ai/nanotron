@@ -164,17 +164,25 @@ def main(args):
             )
 
         # MLP
-        ## Gate Up Proj
-        gate_proj, up_proj = torch.split(
-            nanotron_model.model.decoder[i].pp_block.mlp.gate_up_proj.weight,
-            split_size_or_sections=[nanotron_llama_config.intermediate_size, nanotron_llama_config.intermediate_size],
+        ## Gate Proj
+        assert (
+            hf_model.model.layers[i].mlp.gate_proj.weight.shape
+            == nanotron_model.model.decoder[i].pp_block.mlp.gate_proj.weight.shape
         )
-        assert gate_proj.shape == hf_model.model.layers[i].mlp.gate_proj.weight.shape
-        assert up_proj.shape == hf_model.model.layers[i].mlp.up_proj.weight.shape
-
         with torch.no_grad():
-            hf_model.model.layers[i].mlp.gate_proj.weight.copy_(gate_proj)
-            hf_model.model.layers[i].mlp.up_proj.weight.copy_(up_proj)
+            hf_model.model.layers[i].mlp.gate_proj.weight.copy_(
+                nanotron_model.model.decoder[i].pp_block.mlp.gate_proj.weight
+            )
+
+        ## Up Proj
+        assert (
+            hf_model.model.layers[i].mlp.up_proj.weight.shape
+            == nanotron_model.model.decoder[i].pp_block.mlp.up_proj.weight.shape
+        )
+        with torch.no_grad():
+            hf_model.model.layers[i].mlp.up_proj.weight.copy_(
+                nanotron_model.model.decoder[i].pp_block.mlp.up_proj.weight
+            )
 
         ## Down Proj
         assert (
