@@ -128,7 +128,7 @@ class ChatDatasetsArgs:
 class DataArgs:
     """Arguments related to the data and data files processing"""
 
-    dataset: Union[PretrainDatasetsArgs, NanosetDatasetsArgs, ChatDatasetsArgs]
+    dataset: Optional[Union[PretrainDatasetsArgs, NanosetDatasetsArgs, ChatDatasetsArgs]]
     seed: Optional[int]
     num_loading_workers: Optional[int] = 1
 
@@ -162,6 +162,7 @@ class CheckpointsArgs:
     checkpoints_path: Path
     checkpoint_interval: int
     save_initial_state: Optional[bool] = False
+    save_final_state: Optional[bool] = False
     resume_checkpoint_path: Optional[Path] = None
     checkpoints_path_is_shared_file_system: Optional[bool] = False
 

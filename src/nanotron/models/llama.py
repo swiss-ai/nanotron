@@ -14,10 +14,11 @@
 # limitations under the License.
 """PyTorch LLaMa model."""
 
-from typing import Dict, Optional, Union
+from typing import Dict, Optional, Union, List
 
 import torch
 from torch import nn
+from torch.utils.checkpoint import CheckpointFunction
 
 from nanotron import distributed as dist
 from nanotron import logging
@@ -154,6 +155,7 @@ class MLP(nn.Module):
             bias=False,
             async_communication=tp_linear_async_communication,
             contiguous_chunks=gate_up_contiguous_chunks,
+            tp_recompute_allgather=parallel_config.tp_recompute_allgather,
         )
         self.down_proj = TensorParallelRowLinear(
             config.intermediate_size,
@@ -163,8 +165,7 @@ class MLP(nn.Module):
             bias=False,
             async_communication=tp_linear_async_communication and tp_mode is TensorParallelLinearMode.REDUCE_SCATTER,
         )
-        # TODO @nouamane: why can't we torch.jit.script GLUActivation?
-        self.split_silu_mul = GLUActivation(config.hidden_act)
+        self.split_silu_mul = torch.compile(GLUActivation(config.hidden_act))
 
     def forward(self, hidden_states):  # [seq_length, batch_size, hidden_dim]
         merged_states = self.gate_up_proj(hidden_states)
@@ -301,6 +302,7 @@ class CausalSelfAttention(nn.Module, AttachableStore):
             bias=False,
             async_communication=tp_linear_async_communication,
             contiguous_chunks=qkv_contiguous_chunks,
+            tp_recompute_allgather=parallel_config.tp_recompute_allgather,
         )
         # TODO(kunhao): We want to have only one version per device and not one version per layer.
         self.rotary_embedding = RotaryEmbedding(
@@ -591,12 +593,14 @@ class LlamaDecoderLayer(nn.Module):
 
         self.post_attention_layernorm = TritonRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         self.mlp = MLP(config=config, parallel_config=parallel_config, tp_pg=tp_pg)
-
-    def forward(
+        
+        self.recompute_layer = parallel_config.recompute_layer
+        
+    def _core_forward(
         self,
         hidden_states: Union[torch.Tensor, TensorPointer],
         sequence_mask: Union[torch.Tensor, TensorPointer],
-    ) -> Dict[str, Union[torch.Tensor, TensorPointer]]:
+    ) -> List[Union[torch.Tensor, TensorPointer]]:
         residual = hidden_states
         hidden_states = self.input_layernorm(hidden_states)
 
@@ -609,11 +613,30 @@ class LlamaDecoderLayer(nn.Module):
         hidden_states = self.mlp(hidden_states=hidden_states)["hidden_states"]
         hidden_states = hidden_states + residual
 
+        return hidden_states, output["sequence_mask"]
+        
+    def _checkpointed_forward(
+        self,
+        hidden_states: torch.Tensor,
+        sequence_mask: torch.Tensor,
+        ) -> List[torch.Tensor]:
+        return CheckpointFunction.apply(self._core_forward, True, hidden_states, sequence_mask)
+
+    def forward(
+        self,
+        hidden_states: Union[torch.Tensor, TensorPointer],
+        sequence_mask: Union[torch.Tensor, TensorPointer],
+    ) -> Dict[str, Union[torch.Tensor, TensorPointer]]:
+        
+        if self.recompute_layer and not isinstance(hidden_states, TensorPointer):
+            hidden_states, sequence_mask = self._checkpointed_forward(hidden_states, sequence_mask)
+        else:
+            hidden_states, sequence_mask = self._core_forward(hidden_states, sequence_mask)
+
         return {
             "hidden_states": hidden_states,
-            "sequence_mask": output["sequence_mask"],
+            "sequence_mask": sequence_mask,
         }
-
 
 class Embedding(nn.Module, AttachableStore):
     def __init__(self, tp_pg: dist.ProcessGroup, config: LlamaConfig, parallel_config: Optional[ParallelismArgs]):
@@ -716,6 +739,7 @@ class LlamaModel(nn.Module):
                 # TODO @thomasw21: refactor so that we store that default in a single place.
                 "mode": self.tp_mode,
                 "async_communication": tp_linear_async_communication,
+                "tp_recompute_allgather": parallel_config.tp_recompute_allgather,
             },
             module_input_keys={"x"},
             module_output_keys={"logits"},
