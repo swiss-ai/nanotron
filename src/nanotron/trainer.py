@@ -214,7 +214,7 @@ class DistributedTrainer:
             )
 
         # Define iteration start state
-        if self.init_checkpoint_path is not None:
+        if self.init_checkpoint_path is not None and not self.config.optimizer.sft:
             checkpoint_metadata = load_meta(
                 parallel_context=self.parallel_context, root_folder=self.init_checkpoint_path
             )
