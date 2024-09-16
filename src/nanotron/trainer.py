@@ -191,7 +191,7 @@ class DistributedTrainer:
             optimizer_args=self.config.optimizer,
             parallel_context=self.parallel_context,
         )
-        if self.init_checkpoint_path is not None:
+        if self.init_checkpoint_path is not None and not self.config.optimizer.sft:
             load_optimizer(
                 optimizer=self.optimizer,
                 parallel_context=self.parallel_context,
@@ -206,7 +206,7 @@ class DistributedTrainer:
             lr_scheduler_args=self.config.optimizer.learning_rate_scheduler,
             total_training_steps=self.config.tokens.train_steps,
         )
-        if self.init_checkpoint_path is not None:
+        if self.init_checkpoint_path is not None and not self.config.optimizer.sft:
             load_lr_scheduler(
                 lr_scheduler=self.lr_scheduler,
                 parallel_context=self.parallel_context,
