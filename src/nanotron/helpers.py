@@ -325,7 +325,6 @@ def init_optimizer_and_grad_accumulator(
     )
 
     named_param_groups = merge_named_param_groups(named_param_groups_with_lr, named_param_groups_with_weight_decay)
-
     # Basic optimizer builder
     def basic_optimizer_builder(named_param_groups):
         optimizer = None
