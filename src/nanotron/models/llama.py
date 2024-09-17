@@ -165,7 +165,7 @@ class MLP(nn.Module):
             bias=False,
             async_communication=tp_linear_async_communication and tp_mode is TensorParallelLinearMode.REDUCE_SCATTER,
         )
-        self.split_silu_mul = torch.compile(GLUActivation(config.hidden_act))
+        self.split_silu_mul = GLUActivation(config.hidden_act)
 
     def forward(self, hidden_states):  # [seq_length, batch_size, hidden_dim]
         merged_states = self.gate_up_proj(hidden_states)
@@ -786,15 +786,12 @@ class LlamaModel(nn.Module):
 
     def get_block_compute_costs(self):
         """Computes the compute cost of each block in the model so that we can do a better job of load balancing."""
-        model_config = self.config
-        d_ff = model_config.intermediate_size
-        d_qkv = model_config.hidden_size // model_config.num_attention_heads
         block_compute_costs = {
             # CausalSelfAttention (qkv proj + attn out) + MLP
-            LlamaDecoderLayer: 4 * model_config.num_attention_heads * d_qkv * model_config.hidden_size
-            + 3 * d_ff * model_config.hidden_size,
+            Embedding: 1,
+            LlamaDecoderLayer: 1,
             # This is the last lm_head
-            TensorParallelColumnLinear: model_config.vocab_size * model_config.hidden_size,
+            TensorParallelColumnLinear: 1,
         }
         return block_compute_costs
 
