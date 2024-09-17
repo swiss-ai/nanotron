@@ -1,6 +1,9 @@
+import os
 from typing import List
 
 import numpy as np
+from datasets import load_dataset
+from datasets.distributed import split_dataset_by_node
 from nanotron.data.chat_tokenizer import ChatTokenizer
 from nanotron.data.collator import (
     build_labels,
@@ -10,9 +13,6 @@ from nanotron.data.collator import (
 )
 from torch.utils.data import IterableDataset
 from transformers import AutoTokenizer
-
-from datasets import load_dataset
-from datasets.distributed import split_dataset_by_node
 
 
 class ChatDataset(IterableDataset):
@@ -62,7 +62,9 @@ class ChatDataset(IterableDataset):
         self.seed = seed
 
         # Load, split and shuffle dataset
-        self.dataset = load_dataset(dataset_path, split=split, streaming=True)
+        self.dataset = load_dataset(
+            "parquet", split=split, streaming=True, data_files=os.path.join(dataset_path, "data", "*.parquet")
+        )
         self.dataset = split_dataset_by_node(self.dataset, dp_rank, dp_ranks_size)
         self.dataset = self.dataset.shuffle(seed=seed, buffer_size=10_000)
 
