@@ -19,7 +19,7 @@ from transformers import AutoModelForCausalLM, LlamaConfig
 
 dtype = torch.bfloat16
 device = torch.device("cuda")
-PATH_TO_LLAMA = "meta-llama/Meta-Llama-3.1-8B-Instruct"
+PATH_TO_LLAMA = "/store/swissai/a06/models/Meta-Llama-3.1-8B-Instruct"
 
 # NOTE(tj.solergibert) This script is for testing porpuses. ONLY use 1 GPU
 DP = 1
@@ -199,7 +199,7 @@ def main():
 
     # Create ChatDataloaders
     train_dataset = ChatDataset(
-        dataset_path="Magpie-Align/Magpie-Pro-300K-Filtered",  # "Open-Orca/SlimOrca",
+        dataset_path="/store/swissai/a06/datasets_raw/Magpie-Pro-300K-Filtered",  # "Open-Orca/SlimOrca",
         tokenizer_name_or_path=PATH_TO_LLAMA,
         sequence_length=2048,
         train_on_completions_only=False,
