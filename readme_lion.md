@@ -48,3 +48,26 @@ python3 launcher.py nanotron=fedf_ablation_3B \
 
 
 
+
+
+
+
+                                                      | terminal loss |   tokens / sec / gpu | max memory reserved |
+Adam                                                  |         4.505 |         12706        |  41190162432        |
+Lion, weight decay=.5                                 |         7.350 |         13049        |  36660314112        |
+Lion, weight decay=.5, lr=.0001                       |         4.338 |         12853        |  36660314112        |                    
+Lion, weight decay=.5, lr=.0001, micro batch size = 6 |         4.255 |         13361        |  42121297920        |
+
+
+Using the recommended beta2
+
+python3 launcher.py nanotron=fedf_ablation_3B run=todi_normal ++nanotron.parallelism.tp=4 ++nanotron.parallelism.dp=2
+
+python3 launcher.py nanotron=fedf_ablation_3B run=todi_normal ++nanotron.parallelism.tp=4 ++nanotron.parallelism.dp=1 ++nanotron.general.run=LionBs6 ++nanotron.optimizer.optimizer_factory.name=lion ++run.paths.nanotron_src=/iopsstor/scratch/cscs/kmatoba/nanotron-lion ++nanotron.optimizer.optimizer_factory.adam_beta2=.99 ++nanotron.optimizer.weight_decay=.5 ++nanotron.optimizer.learning_rate_scheduler.learning_rate=0.0001
+
+
+python3 launcher.py nanotron=fedf_ablation_3B run=todi_normal ++nanotron.parallelism.tp=4 ++nanotron.parallelism.dp=1 ++nanotron.general.run=LionBs5 ++nanotron.optimizer.optimizer_factory.name=lion ++run.paths.nanotron_src=/iopsstor/scratch/cscs/kmatoba/nanotron-lion ++nanotron.optimizer.optimizer_factory.adam_beta2=.99 ++nanotron.optimizer.weight_decay=.5 ++nanotron.optimizer.learning_rate_scheduler.learning_rate=0.0001 ++nanotron.tokens.micro_batch_size=6
+
+
+
+
