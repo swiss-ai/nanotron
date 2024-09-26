@@ -171,18 +171,25 @@ def main(args):
             )
 
         # MLP
-        ## Gate Up Proj
-        tmp_gate_up_proj = torch.cat(
-            [
-                hf_model.model.layers[i].mlp.gate_proj.weight,
-                hf_model.model.layers[i].mlp.up_proj.weight,
-            ],
-            dim=0,
+        ## Gate Proj
+        assert (
+            hf_model.model.layers[i].mlp.gate_proj.weight.shape
+            == nanotron_model.model.decoder[i].pp_block.mlp.gate_proj.weight.shape
         )
-
-        assert tmp_gate_up_proj.shape == nanotron_model.model.decoder[i].pp_block.mlp.gate_up_proj.weight.shape
         with torch.no_grad():
-            nanotron_model.model.decoder[i].pp_block.mlp.gate_up_proj.weight.copy_(tmp_gate_up_proj)
+            nanotron_model.model.decoder[i].pp_block.mlp.gate_proj.weight.copy_(
+                hf_model.model.layers[i].mlp.gate_proj.weight
+            )
+
+        ## Up Proj
+        assert (
+            hf_model.model.layers[i].mlp.up_proj.weight.shape
+            == nanotron_model.model.decoder[i].pp_block.mlp.up_proj.weight.shape
+        )
+        with torch.no_grad():
+            nanotron_model.model.decoder[i].pp_block.mlp.up_proj.weight.copy_(
+                hf_model.model.layers[i].mlp.up_proj.weight
+            )
 
         ## Down Proj
         assert (

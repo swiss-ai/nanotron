@@ -94,6 +94,7 @@ class PretrainDatasetsArgs:
 @dataclass
 class NanosetDatasetsArgs:
     dataset_folder: Union[str, dict, List[str]]
+    remove_document_xattention: bool = False
 
     def __post_init__(self):
         if isinstance(self.dataset_folder, str):  # Case 1: 1 Dataset folder
@@ -108,10 +109,26 @@ class NanosetDatasetsArgs:
 
 
 @dataclass
+class ChatDatasetsArgs:
+    hf_dataset: str
+    hf_dataset_split: str
+    conversation_column_name: str
+    # Debug
+    train_on_completions_only: bool = True
+    remove_cross_attention: bool = True
+
+    def __post_init__(self):
+        if self.hf_dataset_split is None:
+            self.hf_dataset_split = "train"
+        if self.conversation_column_name is None:
+            self.conversation_column_name = "conversations"
+
+
+@dataclass
 class DataArgs:
     """Arguments related to the data and data files processing"""
 
-    dataset: Optional[Union[PretrainDatasetsArgs, NanosetDatasetsArgs]]
+    dataset: Optional[Union[PretrainDatasetsArgs, NanosetDatasetsArgs, ChatDatasetsArgs]]
     seed: Optional[int]
     num_loading_workers: Optional[int] = 1
 
@@ -305,6 +322,7 @@ class OptimizerArgs:
     clip_grad: Optional[float]
     accumulate_grad_in_fp32: bool
     learning_rate_scheduler: LRSchedulerArgs
+    sft: bool = False
 
 
 @dataclass

@@ -98,7 +98,9 @@ def main(args):
             dataset_options={"split": args.split},
         )
     elif args.readers == "parquet":
-        datatrove_reader = ParquetReader(data_folder=args.dataset, text_key=args.column, glob_pattern=args.glob_pattern)
+        datatrove_reader = ParquetReader(
+            data_folder=args.dataset, text_key=args.column, glob_pattern=args.glob_pattern
+        )
     else:
         datatrove_reader = JsonlReader(data_folder=args.dataset, text_key=args.column, glob_pattern=args.glob_pattern)
 
