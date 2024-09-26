@@ -125,13 +125,13 @@ class ChatDataset(IterableDataset):
                     position_ids = self.create_position_ids(sample_lengths)
 
                     # TODO(tj.solergibert) Delete (debug)
-                    # assert len(sample_tokens) <= max_buffer_token_len
-
-                    yield {
-                        "input_ids": np.array(sample_tokens, dtype=np.int32),
-                        "is_completitions": np.array(sample_completitions, dtype=np.bool_),
-                        "position_ids": position_ids,
-                    }
+                    # Don't yield samples without ANY completitions tokens as this produces NaN losses
+                    if True in sample_completitions:
+                        yield {
+                            "input_ids": np.array(sample_tokens, dtype=np.int32),
+                            "is_completitions": np.array(sample_completitions, dtype=np.bool_),
+                            "position_ids": position_ids,
+                        }
 
             # TODO(tj.solergibert) Change for log_rank (log_rank is problematic with JupyterNB)
             print("Consumed all samples, dataset is being re-looped.")
