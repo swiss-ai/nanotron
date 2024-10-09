@@ -7,10 +7,12 @@ export CUDA_DEVICE_MAX_CONNECTIONS=1 # important for some distributed operations
 torchrun --nproc_per_node=8 run_train.py --config-file examples/config_tiny_llama.yaml
 ```
 """
+import time
 import argparse
 from typing import Dict, cast
 
 import numpy as np
+
 from nanotron import logging
 from nanotron.config import DataArgs, DatasetStageArgs, NanosetDatasetsArgs, PretrainDatasetsArgs
 from nanotron.data.dataloader_builder import build_nanoset_dataloader
@@ -27,12 +29,13 @@ from nanotron.helpers import (
 from nanotron.logging import log_rank
 from nanotron.parallel.pipeline_parallel.utils import get_input_output_pp_ranks
 from nanotron.trainer import DistributedTrainer
+import nanotron.trainer 
 from nanotron.utils import main_rank_first
 from torch.utils.data import DataLoader
 
 try:
     from huggingface_hub import __version__ as hf_hub_version
-    from transformers import AutoTokenizer
+    from transformers import AutoModelForCausalLM, AutoTokenizer
     from transformers import __version__ as tf_version
 except ImportError:
     hf_hub_version = None
@@ -60,6 +63,10 @@ def get_dataloader_from_data_stage(
     # First, we need to know which ranks to feed the dataloader to
     input_pp_rank, output_pp_rank = get_input_output_pp_ranks(model=trainer.model)
 
+    print("--" * 40) 
+    print(data.dataset)
+    print(type(data.dataset))
+    print("--" * 40) 
     # Case 1: Dummy data generator
     if data.dataset is None:
         log_rank("Using dummy data generator", logger=logger, level=logging.INFO, rank=0)
@@ -142,6 +149,13 @@ def get_dataloader_from_data_stage(
     # Case 3: Nanosets
     elif isinstance(data.dataset, NanosetDatasetsArgs):
         # Get tokenizer cardinality
+        # sleep_seconds = 600
+        # print(f"Sleeping for {sleep_seconds} seconds")
+        # time.sleep(sleep_seconds)
+
+        print(trainer.config.tokenizer.tokenizer_name_or_path)
+        # model = AutoModelForCausalLM.from_pretrained("mistralai/Mistral-Nemo-Base-2407")
+        # del model
         tokenizer = AutoTokenizer.from_pretrained(trainer.config.tokenizer.tokenizer_name_or_path)
         token_size = 4 if len(tokenizer) > np.iinfo(np.uint16).max + 1 else 2
         del tokenizer
@@ -233,5 +247,6 @@ if __name__ == "__main__":
     trainer = DistributedTrainer(config_file)
     dataloader = get_dataloader(trainer)
 
-    # Train
-    trainer.train(dataloader)
+    config = nanotron.trainer.get_config_from_file(config_file)
+    trainer.train(dataloader, validation_args=config.validation)
+

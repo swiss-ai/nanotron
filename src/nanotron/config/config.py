@@ -45,6 +45,7 @@ class LoggingArgs:
     log_level: Optional[str] = None
     log_level_replica: Optional[str] = None
     iteration_step_info_interval: Optional[int] = 1
+    iteration_step_validation_interval: Optional[int] = None
 
     def __post_init__(self):
         if self.log_level is None:
@@ -231,6 +232,14 @@ class TokenizerArgs:
 
 
 @dataclass
+class ValidationArgs:
+    """Arguments related to the validation"""
+    # datasets: Optional[Union[DataArgs, List[DataArgs]]] = None
+    # datasets: Optional[Union[DataArgs, list[DataArgs]]] = None
+    datasets: Optional[Union[DataArgs, list]] = None
+
+
+@dataclass
 class TokensArgs:
     """Arguments related to the tokens, sequence, batch and steps of the training"""
 
@@ -340,6 +349,8 @@ class Config:
     data_stages: Optional[List[DatasetStageArgs]] = None
     profiler: Optional[ProfilerArgs] = None
     lighteval: Optional[LightEvalConfig] = None
+    validation: Optional[ValidationArgs] = None
+
 
     @classmethod
     def create_empty(cls):
