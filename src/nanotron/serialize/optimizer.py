@@ -282,7 +282,7 @@ def load_optimizer(
         state_dict = torch.load(
             root_folder
             / optimizer_filename(parallel_context, is_zero=optimizer.inherit_from(optim.ZeroDistributedOptimizer)),
-            map_location=map_location,
+            map_location=map_location, weights_only=True
         )
 
     if isinstance(optimizer, ZeroDistributedOptimizer):
@@ -315,5 +315,5 @@ def load_lr_scheduler(
 ):
     root_folder = root_folder / "lr_scheduler"
 
-    state_dict = torch.load(root_folder / lr_scheduler_filename(parallel_context))
+    state_dict = torch.load(root_folder / lr_scheduler_filename(parallel_context), weights_only=True)
     lr_scheduler.load_state_dict(state_dict)

@@ -54,6 +54,7 @@ def save(
     lr_scheduler: torch.optim.lr_scheduler.LRScheduler,
     parallel_context: ParallelContext,
     training_metadata: TrainingMetadata,
+    valid_metadata: TrainingMetadata,
     root_folder: Path,
     should_save_config: bool = True,
     should_save_model: bool = True,
@@ -62,6 +63,7 @@ def save(
     sanity_checks: bool = True,
 ) -> None:
     assert isinstance(training_metadata, TrainingMetadata)
+    assert (valid_metadata is None) or isinstance(valid_metadata, TrainingMetadata)
 
     try:
         if should_save_config:
@@ -118,7 +120,10 @@ def save(
         )
         raise e
 
-    save_meta(root_folder=root_folder, parallel_context=parallel_context, training_metadata=training_metadata)
+    save_meta(root_folder=root_folder,
+              parallel_context=parallel_context,
+              training_metadata=training_metadata,
+              valid_metadata=valid_metadata)
 
     # TODO @thomas21: sanity check, not sure whether that needs to happen at testing or now (depends how much it costs)
     ###

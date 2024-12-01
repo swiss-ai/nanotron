@@ -44,6 +44,9 @@ from nanotron.random import RandomStates
 from nanotron.scaling.parametrization import SpectralMupParametrizator, StandardParametrizator
 from nanotron.utils import checkpoint_method
 
+use_flash_attn = False
+# use_flash_attn = True
+
 logger = logging.get_logger(__name__)
 
 
@@ -165,7 +168,12 @@ class MLP(nn.Module):
             bias=False,
             async_communication=tp_linear_async_communication and tp_mode is TensorParallelLinearMode.REDUCE_SCATTER,
         )
-        self.split_silu_mul = torch.compile(GLUActivation(config.hidden_act))
+        # do_compile = True
+        do_compile = False
+        # self.split_silu_mul = torch.compile(GLUActivation(config.hidden_act))
+        self.split_silu_mul = GLUActivation(config.hidden_act)
+        if do_compile:
+            self.split_silu_mul = torch.compile(self.split_silu_mul)
 
     def forward(self, hidden_states):  # [seq_length, batch_size, hidden_dim]
         merged_states = self.gate_up_proj(hidden_states)
@@ -193,23 +201,32 @@ class CoreAttention(nn.Module):
         key_states: torch.Tensor,  # [batch_size, kv_length, n_local_kv_heads, inner_dim]
         value_states: torch.Tensor,  # [batch_size, kv_length, n_local_kv_heads, inner_dim]
     ):
-        from flash_attn.flash_attn_interface import flash_attn_func
+        if use_flash_attn:
+            from flash_attn.flash_attn_interface import flash_attn_func
 
-        # NOTE: this scale is for µTransfer,
-        # in SP, we use sqrt(1/d_h)
-        softmax_scale = 1 / query_states.shape[-1] if self.is_using_mup else None
-        # For now we are assuming that we use causual mask. No magic here
-        causal = True
-        attn_output = flash_attn_func(
-            q=query_states,
-            k=key_states,
-            v=value_states,
-            dropout_p=0.0,
-            softmax_scale=softmax_scale,
-            causal=causal,
-            return_attn_probs=False,
-        )
-
+            # NOTE: this scale is for µTransfer,
+            # in SP, we use sqrt(1/d_h)
+            softmax_scale = 1 / query_states.shape[-1] if self.is_using_mup else None
+            # For now we are assuming that we use causual mask. No magic here
+            causal = True
+            attn_output = flash_attn_func(
+                q=query_states,
+                k=key_states,
+                v=value_states,
+                dropout_p=0.0,
+                softmax_scale=softmax_scale,
+                causal=causal,
+                return_attn_probs=False,
+            )
+        else:
+            assert not self.is_using_mup, "have not tested this"
+            attn_output = torch.nn.functional.scaled_dot_product_attention(
+                query_states.permute(0, 2, 1, 3),
+                key_states.permute(0, 2, 1, 3),
+                value_states.permute(0, 2, 1, 3),
+                dropout_p=0.0,
+                is_causal=True,
+            ).permute(0, 2, 1, 3)
         return attn_output
 
 
@@ -241,6 +258,39 @@ def pad_to_right(tensor, mask, new_tensor=None):
     return new_tensor, right_padded_mask
 
 
+class RotaryEmbeddingKyleLikeFA(torch.nn.Module):
+    """
+    Has the same function signature as FA, for interleaved=True and separate q, kv.
+    seqlen_offset = 0
+    Does not operate inplace, but that's fine for how it's used in Nanotron.
+    """
+    def __init__(self, dim: int, base: float):
+        super().__init__()
+        self.dim = dim
+        self.base = float(base)
+
+        self.max_seq_len = None
+        self.rpe = None
+
+        from torchtune.modules import RotaryPositionalEmbeddings
+        self.rpe_builder = RotaryPositionalEmbeddings
+
+    def forward(self, q, kv):
+        bs, q_len, n_heads, _ = q.shape
+        assert self.dim == _
+
+        assert (bs, q_len, 2, n_heads, self.dim) == kv.shape
+
+        if (self.rpe is None) or (self.max_seq_len != q_len):
+            self.max_seq_len = q_len
+            self.rpe = self.rpe_builder(dim=self.dim,
+                                        max_seq_len=self.max_seq_len,
+                                        base=self.base).to(q.device)
+        q_out = self.rpe(q)
+        kv_out = torch.stack((self.rpe(kv[:, :, 0]), kv[:, :, 1]), 2)
+        return q_out, kv_out
+
+
 class CausalSelfAttention(nn.Module, AttachableStore):
     def __init__(
         self,
@@ -249,8 +299,6 @@ class CausalSelfAttention(nn.Module, AttachableStore):
         tp_pg: dist.ProcessGroup,
         layer_idx: int,
     ):
-        from flash_attn.layers.rotary import RotaryEmbedding as FlashRotaryEmbedding
-
         super().__init__()
         # Tensor parallel considerations: We split tensors along head dimension
         assert (
@@ -310,11 +358,15 @@ class CausalSelfAttention(nn.Module, AttachableStore):
             end=config.max_position_embeddings,
             theta=config.rope_theta,
         )
-
         # NOTE: Only supported for training (TODO(fmom): position_ids not supported yet)
-        self.flash_rotary_embedding = FlashRotaryEmbedding(
-            dim=self.d_qk, interleaved=config.rope_interleaved, base=config.rope_theta
-        )
+        if use_flash_attn:
+            from flash_attn.layers.rotary import RotaryEmbedding as FlashRotaryEmbedding
+            self.flash_rotary_embedding = FlashRotaryEmbedding(
+                dim=self.d_qk, interleaved=config.rope_interleaved, base=config.rope_theta
+            )
+        else:
+            assert config.rope_interleaved, "this case not yet tested"
+            self.flash_rotary_embedding = RotaryEmbeddingKyleLikeFA(dim=self.d_qk, base=config.rope_theta)
 
         self.o_proj = TensorParallelRowLinear(
             config.num_attention_heads * self.d_qk,
@@ -340,12 +392,6 @@ class CausalSelfAttention(nn.Module, AttachableStore):
         hidden_states,  # [seq_length, batch_size, hidden_size]
         sequence_mask,  # [batch_size, seq_length]
     ):
-        from flash_attn import bert_padding
-        from flash_attn.flash_attn_interface import (
-            flash_attn_varlen_func,
-            flash_attn_with_kvcache,
-        )
-
         qkv_states = self.qkv_proj(
             hidden_states
         )  # [seq_length, batch_size, n_local_q_heads * d_qk + 2 * n_local_kv_heads * d_qk]
@@ -397,6 +443,8 @@ class CausalSelfAttention(nn.Module, AttachableStore):
             key_states = self.rotary_embedding(key_states, position_ids=position_ids)
 
             if "key" not in store:
+                from flash_attn import bert_padding
+                from flash_attn.flash_attn_interface import flash_attn_varlen_func
                 # First inference iteration (Prefill)
                 # TODO @nouamane: support custom masking
                 # assert that [ False, False, False, False,  True,  True,  True,  True,  True,  True] is accepted
@@ -457,6 +505,8 @@ class CausalSelfAttention(nn.Module, AttachableStore):
                 pad_to_right(value_states, sequence_mask, new_tensor=v_cache)
 
             else:
+                from flash_attn.flash_attn_interface import flash_attn_with_kvcache
+
                 # Pull pre-computed key/value states
                 # Subsequent inference iterations (q_length=1)
                 k_cache = store["key"]

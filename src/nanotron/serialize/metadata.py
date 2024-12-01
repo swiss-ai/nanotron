@@ -63,8 +63,8 @@ class CheckpointMetadata:
     version: Version
     tp: int
     dp: int
-    metas: TrainingMetadata
-    custom_metas: Optional[Dict[str, Any]] = None
+    train_meta: TrainingMetadata
+    valid_meta: Optional[TrainingMetadata]
 
 
 @dataclasses.dataclass
@@ -125,8 +125,12 @@ def to_list(list_: Union[List, Tuple], type_hooks: Dict[Type, Callable[[Any], An
     return list_.__class__((process_type(elt, type_hooks=type_hooks) for elt in list_))
 
 
-def save_meta(parallel_context: ParallelContext, root_folder: Path, training_metadata: TrainingMetadata):
+def save_meta(parallel_context: ParallelContext,
+              root_folder: Path,
+              training_metadata: TrainingMetadata,
+              valid_metadata: TrainingMetadata):
     assert isinstance(training_metadata, TrainingMetadata)
+    assert (valid_metadata is None) or isinstance(valid_metadata, TrainingMetadata)
 
     if dist.get_rank(parallel_context.world_pg) != 0:
         return
@@ -136,7 +140,8 @@ def save_meta(parallel_context: ParallelContext, root_folder: Path, training_met
         version=CHECKPOINT_VERSION,
         tp=parallel_context.tp_pg.size(),
         dp=parallel_context.dp_pg.size(),
-        metas=training_metadata,
+        train_meta=training_metadata,
+        valid_meta=valid_metadata
     )
 
     # There are some types that require manual casting in order to work correctly.

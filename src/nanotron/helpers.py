@@ -679,19 +679,22 @@ def log_throughput(
 
 
 def compute_remain_train_steps_of_a_data_stage_from_ckp(
-    stage: DatasetStageArgs, config: Config, metadata: TrainingMetadata
+    stage: DatasetStageArgs,
+    data_stages,
+    tokens,
+    metadata: TrainingMetadata
 ) -> int:
     def is_last_stage():
-        sorted_stages = sorted(config.data_stages, key=lambda x: x.start_training_step)
+        sorted_stages = sorted(data_stages, key=lambda x: x.start_training_step)
         return sorted_stages[-1].start_training_step == stage.start_training_step
 
     def is_resume_from_training():
         return metadata.last_train_step > 0
 
     if is_last_stage() is True:
-        total_train_steps = config.tokens.train_steps
+        total_train_steps = tokens.train_steps
     else:
-        next_stage = next((s for s in config.data_stages if s.start_training_step > stage.start_training_step), None)
+        next_stage = next((s for s in data_stages if s.start_training_step > stage.start_training_step), None)
         total_train_steps = next_stage.start_training_step
     
     if metadata.last_train_step > stage.start_training_step:
@@ -708,7 +711,8 @@ def get_consumed_train_samples_of_a_data_stage_from_ckp(
     stage: DatasetStageArgs, metadata: TrainingMetadata
 ) -> Optional[int]:
     start_training_step = stage.start_training_step
-    return next(
+    out = next(
         (s.consumed_train_samples for s in metadata.data_stages if s.start_training_step == start_training_step),
         None,
     )
+    return out
