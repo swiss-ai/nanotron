@@ -188,6 +188,12 @@ class DistributedTrainer:
             optimizer_args=self.config.optimizer,
             parallel_context=self.parallel_context,
         )
+        # Init learning rate scheduler
+        self.lr_scheduler = lr_scheduler_builder(
+            optimizer=self.optimizer,
+            lr_scheduler_args=self.config.optimizer.learning_rate_scheduler,
+            total_training_steps=self.config.tokens.train_steps,
+        )
         if self.init_checkpoint_path is not None:
             load_optimizer(
                 optimizer=self.optimizer,
@@ -197,12 +203,6 @@ class DistributedTrainer:
                 model=self.model,
             )
 
-        # Init learning rate scheduler
-        self.lr_scheduler = lr_scheduler_builder(
-            optimizer=self.optimizer,
-            lr_scheduler_args=self.config.optimizer.learning_rate_scheduler,
-            total_training_steps=self.config.tokens.train_steps,
-        )
         if self.init_checkpoint_path is not None:
             load_lr_scheduler(
                 lr_scheduler=self.lr_scheduler,
@@ -210,12 +210,12 @@ class DistributedTrainer:
                 root_folder=self.init_checkpoint_path,
             )
             # Update optimizer learning rate because otherwise it is set to zero in the first iteration.
-            param_groups = self.optimizer.get_base_optimizer().param_groups
-            last_lrs = self.lr_scheduler.get_last_lr()
-            assert len(param_groups) == len(last_lrs)
-            for group, last_lr in zip(param_groups, last_lrs):
-                assert "lr" in group
-                group["lr"] = last_lr
+            #param_groups = self.optimizer.get_base_optimizer().param_groups
+            #last_lrs = self.lr_scheduler.get_last_lr()
+            #assert len(param_groups) == len(last_lrs)
+            #for group, last_lr in zip(param_groups, last_lrs):
+            #    assert "lr" in group
+            #    group["lr"] = last_lr
 
         # Define iteration start state
         if self.init_checkpoint_path is not None:
