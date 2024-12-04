@@ -43,10 +43,16 @@ pip install -e .
 
 # Install dependencies if you want to use the example scripts
 pip install datasets transformers
+pip install ninja
 pip install triton "flash-attn>=2.5.0" --no-build-isolation
 ```
 > [!NOTE]
 > If you get `undefined symbol: ncclCommRegister` error you should install torch 2.1.2 instead: `pip install torch==2.1.2 --index-url https://download.pytorch.org/whl/cu121`
+
+> [!NOTE]
+> If you get `TypeError: ~ (operator.invert) is only implemented on integer and Boolean-type tensors` error you should also install torch 2.1.2 instead: `pip install torch==2.1.2 --index-url https://download.pytorch.org/whl/cu121; pip install numpy==1.26.4`
+> In order to not break flash-attn, it needs to be reinstalled as well with `pip uninstall flash-attn; pip cache purge; pip install triton flash-attn --no-build-isolation` (at least for me)
+> Also make sure to use GPUs ">=" A100 (for V100 it this also fails).
 
 > [!TIP]
 > We log to wandb automatically if it's installed. For that you can use `pip install wandb`. If you don't want to use wandb, you can run `wandb disabled`.
@@ -69,6 +75,7 @@ You can find more examples in the [`/examples`](/examples) directory:
 <!-- Make a table of the examples we support -->
 | Example | Description |
 | --- | --- |
+| `continued-pretraining` | A minimal continued pretraining example using an TinyLlama_v1.1 (1B). |
 | `custom-dataloader` | Plug a custom dataloader to nanotron |
 | `datatrove` | Use the datatrove library to load data |
 | `doremi` | Use DoReMi to speed up training |
