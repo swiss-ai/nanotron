@@ -108,10 +108,39 @@ class NanosetDatasetsArgs:
 
 
 @dataclass
+class ImageDatasetsArgs:
+    hf_dataset_name_or_type: str
+    sample_encoder: str
+    batch_encoder: str
+    sample_encoding_workers: int
+    batch_encoding_workers: int
+    image_scale_factor: int
+
+    image_size: int = 364
+    sample_encoding_batch: int = 1000
+    batch_encoding_batch: int = 1000
+    hf_dataset_splits: Optional[Union[str, list]] = None
+    hf_dataset_config_name: Optional[str] = None
+    hf_dataset_data_dir: Optional[str] = None
+
+    sample_encoder_args: Optional[dict] = None
+    batch_encoder_args: Optional[dict] = None
+
+    def __post_init__(self):
+        if self.hf_dataset_splits is None:
+            self.hf_dataset_splits = "train"
+        if self.image_size is None:
+            self.image_size = 364
+        if self.sample_encoder_args is None:
+            self.sample_encoder_args = {}
+        if self.batch_encoder_args is None:
+            self.batch_encoder_args = {}
+
+@dataclass
 class DataArgs:
     """Arguments related to the data and data files processing"""
 
-    dataset: Optional[Union[PretrainDatasetsArgs, NanosetDatasetsArgs]]
+    dataset: Optional[Union[PretrainDatasetsArgs, NanosetDatasetsArgs, ImageDatasetsArgs]]
     seed: Optional[int]
     num_loading_workers: Optional[int] = 1
 
@@ -423,6 +452,7 @@ def get_config_from_dict(
             for k, v in config_dict.items()
             if v is not None
         }
+    
     return from_dict(
         data_class=config_class,
         data=config_dict,

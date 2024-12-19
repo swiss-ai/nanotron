@@ -106,6 +106,7 @@ def save_weights(model: nn.Module, parallel_context: ParallelContext, root_folde
                 )
                 raise e
         else:
+            print(f"Parameters {name} should be a NanotronParameter")
             raise NotImplementedError("Parameters are required to be NanotronParameter")
 
 

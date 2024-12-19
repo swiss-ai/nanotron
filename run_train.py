@@ -8,11 +8,13 @@ torchrun --nproc_per_node=8 run_train.py --config-file examples/config_tiny_llam
 ```
 """
 import argparse
+import datasets
 from typing import Dict, cast
 
 import numpy as np
 from nanotron import logging
 from nanotron.config import DataArgs, DatasetStageArgs, NanosetDatasetsArgs, PretrainDatasetsArgs
+from nanotron.config.config import ImageDatasetsArgs
 from nanotron.data.dataloader_builder import build_nanoset_dataloader
 from nanotron.dataloader import (
     clm_process,
@@ -25,6 +27,7 @@ from nanotron.helpers import (
     get_consumed_train_samples_of_a_data_stage_from_ckp,
 )
 from nanotron.logging import log_rank
+from nanotron.modular_dataloader import BATCH_ENCODERS, SAMPLE_ENCODERS
 from nanotron.parallel.pipeline_parallel.utils import get_input_output_pp_ranks
 from nanotron.trainer import DistributedTrainer
 from nanotron.utils import main_rank_first
@@ -32,7 +35,7 @@ from torch.utils.data import DataLoader
 
 try:
     from huggingface_hub import __version__ as hf_hub_version
-    from transformers import AutoTokenizer
+    from transformers import AutoTokenizer, AutoProcessor
     from transformers import __version__ as tf_version
 except ImportError:
     hf_hub_version = None
@@ -96,6 +99,8 @@ def get_dataloader_from_data_stage(
                 splits=data.dataset.hf_dataset_splits,
             )["train"]
 
+
+
             tokenizer = AutoTokenizer.from_pretrained(tokenizer_path)
             tokenizer.pad_token = tokenizer.eos_token
             tokenizer.padding_side = "left"
@@ -127,6 +132,7 @@ def get_dataloader_from_data_stage(
                 dataloader_num_workers=data.num_loading_workers,
                 seed_worker=data.seed,
                 dataloader_drop_last=True,
+                dataset_columns=["input_ids"]
             )
 
             # Check if we have enough samples for train_steps

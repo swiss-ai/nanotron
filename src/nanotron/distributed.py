@@ -24,6 +24,21 @@ def new_group(  # pylint: disable=function-redefined
 
     return dist.new_group(ranks=ranks, timeout=timeout, backend=backend, pg_options=pg_options)
 
+def scatter(
+    output: torch.Tensor,
+    scatter_list: Optional[List[torch.Tensor]],
+    src: int,
+    group: Optional[ProcessGroup] = None,
+    async_op: bool = False,
+) -> Optional[Work]:
+    if group is None:
+        group = dist.torch_dist.distributed_c10d._get_default_group()
+
+    assert (
+        group.size() > 1
+    ), "You should probably not call `scatter` with a single rank, as it copies data over"
+
+    return dist.scatter(tensor=output, scatter_list=scatter_list, src=src, group=group, async_op=async_op)
 
 def reduce_scatter_tensor(  # pylint: disable=function-redefined
     output: torch.Tensor,

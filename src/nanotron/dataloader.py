@@ -29,7 +29,7 @@ try:
         concatenate_datasets,
         load_dataset,
     )
-    from transformers import PreTrainedTokenizerBase
+    from transformers import PreTrainedTokenizerBase, Idefics3Processor
     from transformers.trainer_pt_utils import DistributedSamplerWithLoop
 except ImportError:
     warnings.warn("Datasets and/or Transformers not installed, you'll be unable to use the dataloader.")
@@ -119,6 +119,7 @@ def get_datasets(
                 hf_dataset_or_datasets,
                 hf_dataset_config_name,
                 split=split,
+                trust_remote_code=True
             )
     else:
         raise ValueError(f"hf_dataset_or_datasets must be a dict or string but is {type(hf_dataset_or_datasets)}")
@@ -322,7 +323,7 @@ def clm_process(
         desc=f"Grouping texts in chunks of {sequence_length+1}",
     )
     return train_dataset
-
+        
 
 # Adapted from: https://github.com/huggingface/transformers/blob/47e1676255e5dd86b9541f734cd4f4bdcbb50f4a/src/transformers/data/data_collator.py#L607
 @dataclasses.dataclass
@@ -397,7 +398,7 @@ class DataCollatorForCLM:
         # Cast np.array to torch.Tensor
         result = {k: v if isinstance(v, TensorPointer) else torch.from_numpy(v) for k, v in result.items()}
         return result
-
+    
 
 # Adapted from https://github.com/huggingface/transformers/blob/47e1676255e5dd86b9541f734cd4f4bdcbb50f4a/src/transformers/trainer.py#L763-L835
 def get_sampler(
@@ -452,6 +453,8 @@ def get_train_dataloader(
     dataloader_drop_last: bool = True,
     dataloader_pin_memory: bool = True,
     use_loop_to_round_batch_size: bool = False,
+    dataset_columns = ["input_ids"],
+    collator_builder=None
 ) -> DataLoader:
     if not isinstance(train_dataset, datasets.Dataset):
         raise ValueError(f"training requires a datasets.Dataset, but got {type(train_dataset)}")
@@ -461,17 +464,17 @@ def get_train_dataloader(
         input_pp_rank,
         output_pp_rank,
     ]:
-        train_dataset = train_dataset.with_format(type="numpy", columns=["input_ids"], output_all_columns=True)
+        train_dataset = train_dataset.with_format(type="numpy", columns=dataset_columns, output_all_columns=True)
 
     # Case of ranks not requiring data. We give them an infinite dummy dataloader
     else:
         #
-        assert train_dataset.column_names == ["input_ids"], (
-            f"Dataset has to have a single column, with `input_ids` as the column name. "
+        assert train_dataset.column_names == dataset_columns, (
+            f"Dataset should only have {dataset_columns} columns"
             f"Current dataset: {train_dataset}"
         )
         dataset_length = len(train_dataset)
-        train_dataset = train_dataset.remove_columns(column_names="input_ids")
+        train_dataset = train_dataset.remove_columns(column_names=dataset_columns)
         assert (
             len(train_dataset) == 0
         ), f"Dataset has to be empty after removing the `input_ids` column. Current dataset: {train_dataset}"
@@ -480,13 +483,21 @@ def get_train_dataloader(
         # No need to spawn a lot of workers, we can just use main
         dataloader_num_workers = 0
 
-    data_collator = DataCollatorForCLM(
-        sequence_length=sequence_length,
-        input_pp_rank=input_pp_rank,
-        output_pp_rank=output_pp_rank,
-        parallel_context=parallel_context,
-    )
-
+    if collator_builder is not None:
+        data_collator = collator_builder(
+            sequence_length=sequence_length,
+            input_pp_rank=input_pp_rank,
+            output_pp_rank=output_pp_rank,
+            parallel_context=parallel_context,
+        )
+    else:
+        data_collator = DataCollatorForCLM(
+            sequence_length=sequence_length,
+            input_pp_rank=input_pp_rank,
+            output_pp_rank=output_pp_rank,
+            parallel_context=parallel_context,
+        )
+        
     # Compute size and rank of dataloader workers
     dp_ranks_size = parallel_context.dp_pg.size()
     dp_rank = parallel_context.dp_pg.rank()

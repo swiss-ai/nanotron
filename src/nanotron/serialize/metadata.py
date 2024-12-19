@@ -66,7 +66,12 @@ class CheckpointMetadata:
     metas: TrainingMetadata
     custom_metas: Optional[Dict[str, Any]] = None
 
-
+def to_int(value: str) -> int:
+    try:
+        return int(value)
+    except ValueError:
+        return int(value.split("(")[1].split(")")[0])
+        
 @dataclasses.dataclass
 class TensorMetadata:
     # Mandatory for checkpoint version higher than 1.2
@@ -81,7 +86,7 @@ class TensorMetadata:
         cast=[Version],
         type_hooks={
             Tuple[SlicesPair, ...]: SlicesPair.tuple_from_str,
-            Tuple[int, ...]: lambda x: torch.Size(int(size) for size in x.strip("()").split(",") if size),
+            Tuple[int, ...]: lambda x: torch.Size(to_int(size) for size in x.strip("()").split(",") if size),
         },
         strict=True,
     )

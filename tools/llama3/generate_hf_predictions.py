@@ -65,9 +65,9 @@ def main(args):
         )
 
     # Compute accuracy
-    predictions = np.argmax(output.logits.cpu(), axis=2).flatten().tolist()
-    labels = tokens.cpu().flatten()[1:].tolist()
-    print(f"\nAccuracy: {accuracy_score(labels, predictions)}")
+    # predictions = np.argmax(output.logits.cpu(), axis=2).flatten().tolist()
+    # labels = tokens.cpu().flatten()[1:].tolist()
+    # print(f"\nAccuracy: {accuracy_score(labels, predictions)}")
     # Results
     ## [TP=1] HF 8B: 0.8308823529411765
     ## [TP=2]HF 70B: 0.8860294117647058

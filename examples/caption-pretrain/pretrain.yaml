@@ -1,0 +1,130 @@
+checkpoints:
+  checkpoint_interval: 10
+  checkpoints_path: checkpoints_tmp
+  checkpoints_path_is_shared_file_system: false
+  resume_checkpoint_path: null
+  save_initial_state: false
+data_stages:
+- data:
+    dataset:
+      hf_dataset_name_or_type: "parquet"
+      hf_dataset_data_dir: "/capstor/store/cscs/swissai/a06/zzirui/datasets_raw/laion/laion_prep_train/"
+      sample_encoder: "caption_process"
+      sample_encoder_args:
+        text_field: "caption"
+        image_field: "jpg"
+      batch_encoder: "caption_preprocessed"
+      image_scale_factor: 2
+      sample_encoding_workers: 16
+      sample_encoding_batch: 16
+      batch_encoding_workers: 16
+      batch_encoding_batch: 16
+    seed: 42
+  name: Stable Training Stage
+  start_training_step: 1
+general:
+  benchmark_csv_path: null
+  consumed_train_samples: null
+  ignore_sanity_checks: true
+  project: debug
+  run: idefics3_%date_%jobid
+  seed: 42
+  step: null
+lighteval: null
+logging:
+  iteration_step_info_interval: 1
+  log_level: info
+  log_level_replica: info
+model:
+  ddp_bucket_cap_mb: 25
+  dtype: bfloat16
+  init_method:
+    path: nanotron_checkpoints/Nanotron-Idefics3-8B-Llama3
+    # std: 0.025
+  make_vocab_size_divisible_by: 1
+  model_config:
+    image_token_id: 128257
+    text_config:
+      bos_token_id: 128000
+      eos_token_id:
+      - 128001
+      - 128008
+      - 128009
+      hidden_act: silu
+      hidden_size: 4096
+      initializer_range: 0.02
+      intermediate_size: 14336
+      is_llama_config: true
+      max_position_embeddings: 131072
+      num_attention_heads: 32
+      num_hidden_layers: 32
+      num_key_value_heads: 8
+      pad_token_id: null
+      pretraining_tp: 1
+      rms_norm_eps: 1.0e-05
+      rope_interleaved: false
+      rope_scaling:
+        factor: 8.0
+        high_freq_factor: 4.0
+        low_freq_factor: 1.0
+        original_max_position_embeddings: 8192
+        rope_type: llama3
+      rope_theta: 500000.0
+      tie_word_embeddings: false
+      use_cache: true
+      vocab_size: 128260
+    pad_token_id: 128002
+    scale_factor: 2
+    vision_config:
+      attention_dropout: 0.0
+      hidden_act: gelu_pytorch_tanh
+      hidden_size: 1152
+      image_size: 364
+      intermediate_size: 4304
+      is_using_mup: false
+      layer_norm_eps: 1.0e-06
+      num_attention_heads: 16
+      num_channels: 3
+      num_hidden_layers: 27
+      num_key_value_heads: 16
+      patch_size: 14
+optimizer:
+  accumulate_grad_in_fp32: true
+  clip_grad: 1.0
+  learning_rate_scheduler:
+    learning_rate: 0.0003
+    lr_decay_starting_step: null
+    lr_decay_steps: 13
+    lr_decay_style: cosine
+    lr_warmup_steps: 2
+    lr_warmup_style: linear
+    min_decay_lr: 1.0e-05
+  optimizer_factory:
+    adam_beta1: 0.9
+    adam_beta2: 0.95
+    adam_eps: 1.0e-08
+    name: adamW
+    torch_adam_is_fused: true
+  weight_decay: 0.01
+  zero_stage: 0
+parallelism:
+  dp: 1
+  expert_parallel_size: 1
+  pp: 3
+  pp_engine: 1f1b
+  tp: 1
+  tp_linear_async_communication: true
+  tp_mode: REDUCE_SCATTER
+profiler: null
+tokenizer:
+  tokenizer_max_length: null
+  tokenizer_name_or_path: "hf_idefics3_processor"
+  tokenizer_revision: null
+tokens:
+  batch_accumulation_per_replica: 2
+  limit_test_batches: 0
+  limit_val_batches: 0
+  micro_batch_size: 1 
+  sequence_length: 2048
+  train_steps: 100
+  val_check_interval: -1
